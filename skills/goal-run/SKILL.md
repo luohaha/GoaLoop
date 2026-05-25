@@ -121,12 +121,16 @@ Tell the user briefly what the Runner did (the `summary`). Call
 
 Stop.
 
-## One-shot mode (no /loop)
+## Always call `ScheduleWakeup` on `pending` / `advanced`
 
-If there is no active `/loop` (the user invoked `/goal-run` manually,
-copilot-style), skip the `ScheduleWakeup` calls entirely. Return to
-the user with the summary and let them decide whether to invoke
-`/goal-run` again.
+v0.1 has no reliable way to tell from inside the skill whether the
+current invocation came from `/loop` or from a bare `/goal-run`. The
+skill therefore commits to a single behavior: call `ScheduleWakeup`
+on `pending` and `advanced` unconditionally, and only omit it on
+`pass`. Users who want to stop earlier than `pass` press Esc.
+
+This is documented in `docs/design.md` ("How to run") so users know
+what to expect.
 
 ## Error handling
 

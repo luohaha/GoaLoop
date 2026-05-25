@@ -471,26 +471,42 @@ sections so future Runners can scan quickly:
 <If applicable, what the next Runner should consider; or "n/a".>
 ```
 
-### Modes of use
+### How to run
 
-**Copilot mode.** The user invokes `/goal-run` manually after each
-attempt, reads the Runner's report (relayed by the Manager), and decides
-whether to continue. The user is the de facto pacer.
+v0.1 has a single mode: the user invokes `/loop /goal-run` (dynamic,
+no interval), and the loop self-paces until the Runner reports `pass`
+or the user stops it.
 
-**Auto mode.** The user invokes `/loop /goal-run` once. The `/loop`
-skill runs in **dynamic mode** (no interval), letting the Manager self-pace
-via `ScheduleWakeup`. The loop terminates when:
+There is intentionally no separate "copilot" / "one-shot" mode in
+v0.1. The Manager skill always calls `ScheduleWakeup` on `advanced`
+or `pending`, because it has no reliable way to detect whether the
+current invocation came from `/loop` or from a bare `/goal-run`. The
+honest design choice is to commit to the auto-paced shape and let the
+human pace by other means (described below) rather than fake a
+copilot mode that the implementation cannot guarantee.
+
+The loop terminates when:
 
 - The Runner reports `pass`, the Manager does not schedule the next
   wakeup, and the loop ends naturally.
 - The user presses `Esc` / closes the session.
 - The 7-day auto-expiry on scheduled tasks fires.
 
-> **Important.** Use dynamic mode (`/loop /goal-run`), NOT interval mode
-> (`/loop 5m /goal-run`). Interval-mode loops cannot be ended by the
-> invoked skill — only by the user. Dynamic mode lets the Manager end the
-> loop by simply not scheduling the next wakeup once the Runner reports
-> `pass`.
+Human pacing during a run is achieved by:
+
+- **Reading the relayed report** after each attempt. The Manager
+  summarizes the Runner's return to the user.
+- **Dropping verbatim suggestions** in the conversation, which the
+  Manager relays into the next Runner's brief.
+- **Editing `goal.md`** mid-run to amend the target or constraints.
+  The next Runner picks up the new spec.
+- **Pressing Esc** to stop earlier than `pass`.
+
+> **Important.** Use dynamic mode (`/loop /goal-run`), NOT interval
+> mode (`/loop 5m /goal-run`). Interval-mode loops cannot be ended by
+> the invoked skill — only by the user. Dynamic mode lets the Manager
+> end the loop by simply not scheduling the next wakeup once the
+> Runner reports `pass`.
 
 ### Loop nesting is not allowed
 

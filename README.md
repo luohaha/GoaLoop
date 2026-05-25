@@ -109,29 +109,42 @@ When the interview completes, your workspace looks like:
 └── attempts/         # one file per attempt, write-once audit trail
 ```
 
-Then iterate:
+Then start the loop:
 
 ```
-> /goal-run                  # one attempt, manual pace (copilot)
+> /loop /goal-run            # dynamic mode — self-paces until pass
 ```
 
-Or auto mode:
+## Running
+
+GoaLoop runs as a single self-paced loop. There is no manual one-shot
+mode in v0.1: `/goal-run` always schedules the next attempt via
+`ScheduleWakeup` if the goal is not yet met, because the Manager has
+no reliable way to tell whether it is running under `/loop` or not.
+
+Invocation:
 
 ```
-> /loop /goal-run            # dynamic mode — agent self-paces, stops on pass
+> /loop /goal-run
 ```
 
-## Two modes
+The loop terminates when:
 
-| Mode | Invocation | When the loop stops |
-|---|---|---|
-| Copilot | repeated manual `/goal-run` | When you decide |
-| Auto | `/loop /goal-run` (dynamic, no interval) | When Runner reports pass and doesn't schedule next, OR you press Esc |
+- The Runner reports `pass`, the Manager therefore omits the next
+  `ScheduleWakeup`, and the loop ends naturally.
+- You press `Esc` (or close the session).
+- The 7-day auto-expiry on `/loop` fires.
+
+You stay in control throughout: read what the Runner did after each
+attempt (relayed by the Manager), drop suggestions into the
+conversation (verbatim-relayed to the next Runner), or edit `goal.md`
+to amend the target. To stop sooner than `pass`, press Esc.
 
 > ⚠️ Only use `/loop /goal-run` in **dynamic mode** (no interval).
 > An interval-mode loop like `/loop 5m /goal-run` cannot be ended by
-> the skill — only by you pressing Esc. Dynamic mode lets the agent
-> end the loop naturally when the goal is met.
+> the skill — only by you pressing Esc. Dynamic mode lets the Manager
+> end the loop naturally by omitting `ScheduleWakeup` once the Runner
+> reports `pass`.
 
 ## Workspace contents
 
