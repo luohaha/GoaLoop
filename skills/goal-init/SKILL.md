@@ -122,8 +122,9 @@ mkdir -p <workspace>/memory <workspace>/attempts
 After writing, tell the user:
 - The workspace path
 - That `goal.md` was written (and show its content for review)
-- That they can now run `/goal-run` for one attempt, or
-  `/loop /goal-run` (dynamic mode) for auto mode
+- That they can now run `/goal-run`, which iterates automatically —
+  it self-schedules each next attempt until the goal is met (press
+  Esc to stop early); no `/loop` wrapper needed
 
 Encourage them to read and tweak `goal.md` before kicking off — it's
 the load-bearing artifact of the whole framework.

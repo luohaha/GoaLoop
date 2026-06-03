@@ -123,7 +123,7 @@ itself useful product feedback to the human.
 GoaLoop is a thin layer of conventions on top of Claude Code. It cannot:
 
 - Count tokens (not exposed to skills).
-- Stop `/loop` programmatically (only `Esc` / session close / 7-day expiry).
+- Stop a running loop programmatically (only `Esc` / session close / 7-day expiry).
 - Sandbox the agent from the user's workspace.
 - Verify that the Runner ran the verification procedure honestly (next
   Runner's verification catches it, but not in real time).
@@ -142,7 +142,7 @@ lives on disk. GoaLoop preserves the spirit while changing the runtime:
 
 | Ralph (`claude -p`) | GoaLoop (skills + subagent) |
 |---|---|
-| `while :; do claude -p < PROMPT.md` | `/loop /goal-run` (dynamic mode) |
+| `while :; do claude -p < PROMPT.md` | `/goal-run`, self-scheduling via `ScheduleWakeup(prompt: "/goal-run")` |
 | `PROMPT.md` (fixed instruction) | `/goal-run` skill body |
 | Subprocess per iteration | Fresh subagent per iteration |
 | `PLAN.md` + scattered state files | `goal.md` + `memory/learnings.md` + `attempts/NNN.md` |
@@ -475,17 +475,21 @@ sections so future Runners can scan quickly:
 
 ### How to run
 
-v0.1 has a single mode: the user invokes `/loop /goal-run` (dynamic,
-no interval), and the loop self-paces until the Runner reports `pass`
-or the user stops it.
+v0.1 has a single mode: the user invokes `/goal-run`. It is
+self-driving — there is no outer `/loop` wrapper. On `advanced` or
+`pending` the Manager schedules its own next invocation with
+`ScheduleWakeup(prompt: "/goal-run")`; on `pass` it omits the wakeup
+so the loop ends. The user types `/goal-run` once and it self-paces
+until the Runner reports `pass` or the user stops it.
 
 There is intentionally no separate "copilot" / "one-shot" mode in
-v0.1. The Manager skill always calls `ScheduleWakeup` on `advanced`
-or `pending`, because it has no reliable way to detect whether the
-current invocation came from `/loop` or from a bare `/goal-run`. The
-honest design choice is to commit to the auto-paced shape and let the
-human pace by other means (described below) rather than fake a
-copilot mode that the implementation cannot guarantee.
+v0.1. The Manager always calls `ScheduleWakeup` on `advanced` or
+`pending` and only omits it on `pass`. A bare `/goal-run` therefore
+behaves the same whether the user wants one attempt or many: it keeps
+re-invoking itself until the goal is met. The honest design choice is
+to commit to the auto-paced shape and let the human pace by other
+means (described below) rather than fake a copilot mode the
+implementation cannot guarantee.
 
 The loop terminates when:
 
@@ -504,21 +508,22 @@ Human pacing during a run is achieved by:
   The next Runner picks up the new spec.
 - **Pressing Esc** to stop earlier than `pass`.
 
-> **Important.** Use dynamic mode (`/loop /goal-run`), NOT interval
-> mode (`/loop 5m /goal-run`). Interval-mode loops cannot be ended by
-> the invoked skill — only by the user. Dynamic mode lets the Manager
-> end the loop by simply not scheduling the next wakeup once the
-> Runner reports `pass`.
+> **Important.** The loop is driven by the Manager's own
+> `ScheduleWakeup(prompt: "/goal-run")` chain — one wakeup scheduled
+> per turn, ended by simply not scheduling the next one once the
+> Runner reports `pass`. Do not wrap `/goal-run` in `/loop`; the skill
+> already self-schedules, and an interval-mode `/loop` could not be
+> ended by the skill anyway.
 
-### Loop nesting is not allowed
+### No loop nesting
 
-GoaLoop relies on a single outer `/loop /goal-run` in dynamic mode. The
-Manager skill body MUST NOT invoke another `/loop` internally, and the
-Runner subagent MUST NOT invoke `/loop` at all. Nested `/loop` behavior is
-not documented in Claude Code and is not part of GoaLoop's contract.
-Sub-task polling and long-running verification are handled by the outer
-loop's `ScheduleWakeup` and the Verification three-state semantics
-described above.
+GoaLoop relies on a single self-scheduling `/goal-run` chain. The
+Manager skill body MUST NOT invoke `/loop` at all, and the Runner
+subagent MUST NOT call `ScheduleWakeup` or `/loop`. Only the Manager
+schedules the next attempt, via one `ScheduleWakeup(prompt:
+"/goal-run")` per turn. Sub-task polling and long-running verification
+are handled by that same wakeup chain and the Verification three-state
+semantics described above.
 
 ### Termination
 
@@ -527,7 +532,8 @@ Two real paths:
 1. **Goal met.** Runner returns `pass`; Manager does not call
    `ScheduleWakeup`; loop ends naturally. Workspace contains the converged
    state, full audit trail in `attempts/`.
-2. **Human stops.** User presses `Esc`, closes the session, or stops `/loop`.
+2. **Human stops.** User presses `Esc`, closes the session, or lets the
+   scheduled wakeup chain expire.
 
 There is no "budget exhausted", no "max attempts", no "convergence detected"
 termination from the framework. If progress stalls, the human notices (by
@@ -556,8 +562,8 @@ with the reason so future contributors don't reintroduce them by reflex.
 | `suggestions.md` (human → agent async channel) | User speaks to the Manager in the conversation; Manager passes recent feedback into the Runner's brief |
 | `questions.md` (agent → human async channel) | Manager talks to the human directly in the conversation |
 | `DONE` marker file | Not needed — Manager omitting `ScheduleWakeup` ends the loop; "DONE" in the Manager's message to the user is the human-visible signal |
-| Auto-pause / human-review pause skill | `/loop` in dynamic mode auto-pauses between attempts; user reads the Manager's relay of the Runner's report and decides |
-| Nested `/loop` invocations | Nested loop behavior is not documented in Claude Code; GoaLoop relies only on a single outer `/loop /goal-run` |
+| Auto-pause / human-review pause skill | The self-scheduling chain already pauses between attempts — each wakeup is a fresh turn; the user reads the Manager's relay of the Runner's report and decides |
+| Nested `/loop` invocations | GoaLoop uses no `/loop` at all; it relies only on a single self-scheduling `/goal-run` chain via `ScheduleWakeup` |
 | Manager-side verification or memory curation | Runner is the sole writer to `learnings.md` and `attempts/`; keeps a single authoritative writer per file |
 | Pre-check / post-check duplication | One Verification per attempt; the next attempt's Verification serves as the prior attempt's post-mortem |
 
