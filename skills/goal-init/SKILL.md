@@ -6,6 +6,13 @@ description: Initialize a new GoaLoop workspace by interviewing the user and wri
 You are running `/goal-init` for GoaLoop. Interview the user and produce
 a valid `goal.md` plus the supporting directory structure.
 
+## Workspace location
+
+Workspaces always live under `~/.goaloop/<workspace_name>`. You never
+ask for a path — only for the workspace name. Once you know the name,
+the working directory is fixed at `~/.goaloop/<workspace_name>`.
+Everywhere below, `<workspace>` means that resolved path.
+
 ## Outcome
 
 When you finish, the workspace directory contains:
@@ -33,9 +40,11 @@ When you finish, the workspace directory contains:
 
 Ask these in order, one at a time:
 
-1. **Workspace location.** "Where should this workspace live? Give me
-   an absolute path. If the directory doesn't exist I'll create it. If
-   it does exist, it must not already contain a `goal.md`."
+1. **Workspace name.** "What should I call this workspace? Give me a
+   short name (the project name works well). The workspace will live at
+   `~/.goaloop/<name>`." Resolve `<workspace>` to that path. If it
+   already exists, it must not already contain a `goal.md` — if it
+   does, stop and tell the user.
 
 2. **Objective.** "In one sentence, what is the end state you want to
    reach? Make it quantitative if at all possible — a number to hit, a
@@ -113,8 +122,9 @@ mkdir -p <workspace>/memory <workspace>/attempts
 After writing, tell the user:
 - The workspace path
 - That `goal.md` was written (and show its content for review)
-- That they can now run `/goal-run` for one attempt, or
-  `/loop /goal-run` (dynamic mode) for auto mode
+- That they can now run `/goal-run`, which iterates automatically —
+  it self-schedules each next attempt until the goal is met (press
+  Esc to stop early); no `/loop` wrapper needed
 
 Encourage them to read and tweak `goal.md` before kicking off — it's
 the load-bearing artifact of the whole framework.

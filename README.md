@@ -52,9 +52,9 @@ Your Claude Code session (Manager)
   │     │  writes attempts/NNN.md; optionally updates learnings.md
   │     │  returns JSON report
   │     ▼
-  │   Manager: pass → stop; pending/advanced → ScheduleWakeup
+  │   Manager: pass → stop; pending/advanced → ScheduleWakeup("/goal-run")
   │
-  └── /loop /goal-run (dynamic mode) drives this automatically
+  └── /goal-run self-schedules its next attempt — no /loop wrapper
 ```
 
 ## Install
@@ -109,29 +109,41 @@ When the interview completes, your workspace looks like:
 └── attempts/         # one file per attempt, write-once audit trail
 ```
 
-Then iterate:
+Then start it:
 
 ```
-> /goal-run                  # one attempt, manual pace (copilot)
+> /goal-run                  # self-paces until pass — no /loop needed
 ```
 
-Or auto mode:
+## Running
+
+GoaLoop runs as a single self-driven loop. There is no manual one-shot
+mode in v0.1, and no outer `/loop` wrapper: on `advanced` or `pending`
+`/goal-run` schedules its own next attempt via
+`ScheduleWakeup(prompt: "/goal-run")`, and on `pass` it omits the
+wakeup so the loop ends. You type `/goal-run` once and it keeps going.
+
+Invocation:
 
 ```
-> /loop /goal-run            # dynamic mode — agent self-paces, stops on pass
+> /goal-run
 ```
 
-## Two modes
+The loop terminates when:
 
-| Mode | Invocation | When the loop stops |
-|---|---|---|
-| Copilot | repeated manual `/goal-run` | When you decide |
-| Auto | `/loop /goal-run` (dynamic, no interval) | When Runner reports pass and doesn't schedule next, OR you press Esc |
+- The Runner reports `pass`, the Manager therefore omits the next
+  `ScheduleWakeup`, and the loop ends naturally.
+- You press `Esc` (or close the session).
+- The 7-day auto-expiry on scheduled wakeups fires.
 
-> ⚠️ Only use `/loop /goal-run` in **dynamic mode** (no interval).
-> An interval-mode loop like `/loop 5m /goal-run` cannot be ended by
-> the skill — only by you pressing Esc. Dynamic mode lets the agent
-> end the loop naturally when the goal is met.
+You stay in control throughout: read what the Runner did after each
+attempt (relayed by the Manager), drop suggestions into the
+conversation (verbatim-relayed to the next Runner), or edit `goal.md`
+to amend the target. To stop sooner than `pass`, press Esc.
+
+> ⚠️ Don't wrap `/goal-run` in `/loop`. The skill already self-schedules
+> via `ScheduleWakeup`; an interval-mode `/loop 5m /goal-run` could not
+> be ended by the skill anyway. Just run `/goal-run`.
 
 ## Workspace contents
 

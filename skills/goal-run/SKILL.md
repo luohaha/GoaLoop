@@ -95,8 +95,8 @@ Parse the JSON block at the end of the Runner's response.
 ### `status: "pass"`
 
 The goal is met. Tell the user briefly, including the `verification`
-summary. **Do NOT call `ScheduleWakeup`** — this ends `/loop` in
-dynamic mode. Stop.
+summary. **Do NOT call `ScheduleWakeup`** — omitting the wakeup ends
+the self-driven loop. Stop.
 
 ### `status: "pending"`
 
@@ -104,8 +104,8 @@ Verification is in flight. Tell the user briefly, mentioning
 `what_is_in_flight`. Call `ScheduleWakeup` with:
 - `delaySeconds`: `suggested_delay_seconds` from the report, clamped
   to `[60, 3600]` by the runtime anyway
-- `prompt`: `"<<autonomous-loop-dynamic>>"` (sentinel for /loop
-  dynamic continuation)
+- `prompt`: `"/goal-run"` (re-invokes this skill on wakeup — the
+  loop is self-driven, no outer `/loop` wrapper)
 - `reason`: short, e.g. `"waiting on benchmark 8c4f-2a"`
 
 Stop.
@@ -116,17 +116,22 @@ Tell the user briefly what the Runner did (the `summary`). Call
 `ScheduleWakeup` for the next attempt:
 - `delaySeconds`: a sensible default for the task tempo (60-300 for
   fast iteration, longer for slow domains)
-- `prompt`: `"<<autonomous-loop-dynamic>>"`
+- `prompt`: `"/goal-run"`
 - `reason`: e.g. `"starting attempt 006"`
 
 Stop.
 
-## One-shot mode (no /loop)
+## `/goal-run` drives its own loop
 
-If there is no active `/loop` (the user invoked `/goal-run` manually,
-copilot-style), skip the `ScheduleWakeup` calls entirely. Return to
-the user with the summary and let them decide whether to invoke
-`/goal-run` again.
+There is no outer `/loop` wrapper. `/goal-run` is self-driving: on
+`advanced` and `pending` it schedules its own next invocation via
+`ScheduleWakeup` with `prompt: "/goal-run"`, and on `pass` it omits
+the wakeup so the loop ends naturally. A single `/goal-run` therefore
+keeps re-invoking itself until the goal is met or the user stops it.
+Users who want to stop earlier than `pass` press Esc.
+
+This is documented in `docs/design.md` ("How to run") so users know
+what to expect.
 
 ## Error handling
 
