@@ -161,8 +161,9 @@ satisfied. Captured in `goal.md`. Mutable mid-run — editing `goal.md` takes
 effect on the next `/goal-run` invocation.
 
 **Workspace**
-A directory that contains one goal-driven task instance. Its path is its
-identifier; there is no global "workspace name". Default fully private:
+A directory that contains one goal-driven task instance. It lives at
+`~/.goaloop/<workspace_name>`, so the workspace name is its identifier and
+its path is derived from that name. Default fully private:
 nothing crosses workspace boundaries unless the user explicitly arranges
 sharing outside GoaLoop. Multiple workspaces can run concurrently in separate
 Claude Code sessions; external resource conflicts (shared clusters, shared
@@ -305,7 +306,8 @@ guarantee is the rigor of `goal.md`'s Verification section.
 
 Interview script (each step waits for the user's answer before proceeding):
 
-1. **Workspace location.** "Where should this workspace live? (path)"
+1. **Workspace name.** "What should I call this workspace? It will live at
+   `~/.goaloop/<name>`." (path is derived from the name, never asked)
 2. **Objective.** "In one sentence, what are you trying to achieve? Make it
    quantitative if possible."
 3. **Hard Constraints.** "What absolutely cannot change or degrade while
