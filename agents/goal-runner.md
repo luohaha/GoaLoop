@@ -17,10 +17,13 @@ Your turn's prompt (the brief from the `goaloop` orchestrator) includes:
 - This attempt's number (`NNN`)
 - The instruction to read context and the expected return shape
 
-There is no separate human-guidance channel: the human's current
-guidance lives in `goal.md` (the orchestrator has no conversation to relay).
-If `goal.md` changed since the last attempt, the new spec is what you
-follow.
+Human guidance reaches you only through files (the orchestrator has no
+live conversation to relay), two ways:
+- `goal.md` — permanent/structural guidance. If it changed since the last
+  attempt, the new spec is what you follow.
+- A "Human guidance (NEW …)" section in this brief, when present — transient
+  per-attempt notes the human left (sourced from `suggestions.md`). Address
+  them this attempt.
 
 ## Step 1 — Load context
 

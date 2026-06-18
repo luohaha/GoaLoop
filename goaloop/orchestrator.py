@@ -41,25 +41,12 @@ TRANSIENT_MAX_RETRIES = 3
 IN_PROGRESS_MAX_SECS = 7200
 IN_PROGRESS_FALLBACK_SECS = 300
 
-# Resume prompts (sent instead of the full brief — the session already holds
-# the brief + all context, so re-sending would just re-bill input tokens).
-# Two variants, mirroring auto-perf-opt's runner.py / base.py split:
-#
-# - in_progress: a clean, deliberate turn-end. The Runner knows exactly what
-#   it was waiting on, so a one-word nudge is enough.
-# - interrupted (crash / transient / quota): the prior turn was cut off
-#   mid-stream, possibly with a truncated assistant message. Spell out
-#   "ignore the error, don't restart" so the Runner doesn't redo finished work.
-#
-# Both are non-empty, which is all `--resume` requires (the empty-prompt
-# rejection only applies when no deferred-tool marker is present).
+# Prompt sent on every resume (in_progress pause, or crash/transient/quota
+# interruption) instead of the full brief — the session already holds the
+# brief + all context, so re-sending would just re-bill input tokens. One
+# word is enough: it's non-empty (all `--resume` requires) and the session
+# transcript tells the Runner where it left off.
 _CONTINUE_PROMPT = "Continue."
-_INTERRUPTED_RESUME_PROMPT = (
-    "The previous turn was interrupted (a transient API error or a restart). "
-    "Ignore that interruption and continue this attempt where you left off — "
-    "do not restart work already completed in this session. End with the same "
-    "JSON terminator (pass / advanced / in_progress)."
-)
 
 _ATTEMPT_RE = re.compile(r"^(\d{3})\.md$")
 # Last JSON object in the Runner's text that carries a "status" field.
@@ -205,55 +192,27 @@ class Orchestrator:
     def _build_brief(self, n: int) -> str:
         guidance = self._suggestions_section()
         return f"""You are GoaLoop Runner for the workspace at {self.ws}.
-This is attempt {n:03d}.
+This is attempt {n:03d}; write your attempt record to attempts/{n:03d}.md.
 
-Establish context by reading, in order:
-- goal.md (the full Goal specification — Objective, Hard Constraints, Verification)
-- memory/learnings.md (curated cross-attempt knowledge; may not exist yet)
-- the most recent attempts/*.md (at least the last 3)
-
-Permanent guidance lives in goal.md (authoritative if it changed since the
-last attempt). Any per-attempt human notes appear below under "Human
-guidance"; if none appear, there are none this attempt.
+Read goal.md, memory/learnings.md, and the most recent attempts/*.md for
+context, then run one attempt per your system-prompt workflow. goal.md holds
+permanent guidance (authoritative if it changed since the last attempt); any
+per-attempt human notes appear below.
 {guidance}
-Then follow the standard Runner workflow from your system prompt:
-1. Run the Verification procedure from goal.md to completion (wait for any
-   long-running step — do not return before it finishes).
-2. If it PASSES: write attempts/{n:03d}.md and stop.
-3. If it FAILS: do exactly one meaningful unit of advance, update
-   memory/learnings.md if you learned something, write attempts/{n:03d}.md.
-
-End your final message with a single line that is a JSON object, one of:
+End your final message with a single line that is one of these JSON objects
+(see your system prompt for when to use each):
   {{"status": "pass", "verification": "<one-line summary>"}}
   {{"status": "advanced", "summary": "<one paragraph>"}}
   {{"status": "in_progress", "wait_secs": <int>, "note": "<what you're waiting on>"}}
-  {{"status": "blocked", "reason": "<why you're stuck and what a human must resolve>"}}
-
-Use `blocked` when you cannot reach pass AND another `advanced` attempt
-would not help — you are stuck and need a human (e.g. missing access you
-can't obtain, the goal looks contradictory/unreachable, an external
-dependency is down indefinitely, or approaches are exhausted with no new
-idea). Write attempts/{n:03d}.md recording why, then return blocked; the
-orchestrator stops the loop. Do NOT use blocked just because one attempt
-failed — that's `advanced`.
-
-Use `in_progress` ONLY to save tokens on a long job you would otherwise
-poll in a live turn: kick the job off in the background, then end your
-turn with `in_progress` and how long to wait. You will be resumed in THIS
-SAME session after that wait to check on it and finish the attempt — so
-do not write attempts/{n:03d}.md yet. If a verification step simply blocks
-until done (a single command that returns when finished), just wait for it
-inline and do not use in_progress.
+  {{"status": "blocked", "reason": "<why you're stuck; what a human must resolve>"}}
 """
 
     # ---- the loop ----------------------------------------------------
 
     def run(self) -> None:
         cp = self._load_checkpoint()
-        # If a prior process died mid-attempt, resume that session. A
-        # checkpoint resume is a crash recovery → treat as "interrupted".
+        # If a prior process died mid-attempt, resume that session.
         resume_session: str | None = cp.get("active_session_id")
-        resume_reason: str = "interrupted"
         consecutive_failures = 0
 
         while True:
@@ -261,10 +220,8 @@ inline and do not use in_progress.
 
             if resume_session:
                 session_id, resume = resume_session, True
-                prompt = (_CONTINUE_PROMPT if resume_reason == "in_progress"
-                          else _INTERRUPTED_RESUME_PROMPT)
-                self.log(f"[orchestrator] attempt {n:03d}: resuming session "
-                         f"{session_id[:8]} ({resume_reason})")
+                prompt = _CONTINUE_PROMPT  # session already holds the brief + context
+                self.log(f"[orchestrator] attempt {n:03d}: resuming session {session_id[:8]}")
             else:
                 session_id, resume = str(uuid.uuid4()), False
                 prompt = self._build_brief(n)
@@ -282,10 +239,10 @@ inline and do not use in_progress.
                 )
                 self._mark_complete(n, "quota_paused", None)
                 time.sleep(QUOTA_RETRY_SECS)
-                resume_session, resume_reason = session_id, "interrupted"
+                resume_session = session_id
                 continue
             except TransientError as e:
-                resume_session, resume_reason = e.session_id, "interrupted"
+                resume_session = e.session_id
                 retries = cp.get("transient_retries", 0) + 1
                 cp["transient_retries"] = retries
                 if retries > TRANSIENT_MAX_RETRIES:
@@ -306,7 +263,7 @@ inline and do not use in_progress.
                     self._end_error(n, f"{consecutive_failures} consecutive failures "
                                        f"(last: {e})")
                     return
-                resume_session, resume_reason = session_id, "interrupted"
+                resume_session = session_id
                 continue
 
             cp["transient_retries"] = 0
@@ -350,7 +307,7 @@ inline and do not use in_progress.
                 )
                 consecutive_failures = 0
                 time.sleep(wait)
-                resume_session, resume_reason = session_id, "in_progress"
+                resume_session = session_id
                 continue
 
             # advanced — verify the Runner actually recorded the attempt.
@@ -365,7 +322,7 @@ inline and do not use in_progress.
                     self._end_error(n, f"{consecutive_failures} consecutive malformed "
                                        f"attempts (last: {reason})")
                     return
-                resume_session, resume_reason = session_id, "interrupted"
+                resume_session = session_id
                 continue
 
             # Clean advance: next attempt starts fresh (no memory of this one).
