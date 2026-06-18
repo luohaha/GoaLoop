@@ -249,7 +249,7 @@ tokens.
     ├── attempt_complete.json  # Last completed attempt's {attempt, status, cost_usd}
     ├── suggestions.cursor     # Byte offset into suggestions.md already shown
     ├── continue.json  # copilot-mode approval token (written by `goaloop continue`)
-    ├── loop.log       # Per-attempt log: Runner messages, tool calls, results
+    ├── orchestrator.log       # Per-attempt log: Runner messages, tool calls, results
     └── pipeline.pid   # PID of the running orchestrator (for status/stop)
 ```
 
@@ -603,7 +603,7 @@ indefinitely.)
 Human pacing during a run is achieved by:
 
 - **Reading status** via `/goal-run` (or `goaloop status`, or
-  `tail -f .goaloop/loop.log`) — the orchestrator writes `status.txt` and
+  `tail -f .goaloop/orchestrator.log`) — the orchestrator writes `status.txt` and
   `attempt_complete.json` each attempt.
 - **Editing `goal.md`** (permanent) or **appending to `suggestions.md`**
   (transient, per-attempt) to steer — the next attempt's Runner picks it up
@@ -673,8 +673,8 @@ with the reason so future contributors don't reintroduce them by reflex.
 | Workspace isolation primitives (`snapshot`, `rollback`) | Trial-and-rollback inside one Runner attempt is the Runner's responsibility (`git stash`, copy directories, whatever fits); the framework only sees the end of each attempt |
 | Cross-workspace sharing (learnings / skills / templates) | v1 keeps workspaces fully independent; cross-workspace patterns can be added when concrete demand appears |
 | External resource locks (shared clusters, GPUs) | Outside GoaLoop's scope; if needed, the user's verification scripts coordinate via whatever mechanism fits their environment |
-| Custom monitor TUI | `.goaloop/loop.log` (`tail -f`) plus `goaloop status` / `/goal-run` cover live monitoring; a bespoke TUI isn't worth the maintenance |
-| `events.jsonl` event stream | `loop.log` already captures per-attempt Runner messages, tool calls, and results; one less format |
+| Custom monitor TUI | `.goaloop/orchestrator.log` (`tail -f`) plus `goaloop status` / `/goal-run` cover live monitoring; a bespoke TUI isn't worth the maintenance |
+| `events.jsonl` event stream | `orchestrator.log` already captures per-attempt Runner messages, tool calls, and results; one less format |
 | `questions.md` (agent → human async channel) | The Runner records open questions in `attempts/NNN.md` / `learnings.md`; the human reads them via `/goal-run` |
 | `DONE` marker file | Not needed — the orchestrator exiting on `pass` and `status.txt` recording PASS is the signal; `/goal-run` relays "DONE" to the user |
 | Nested `/loop` invocations | GoaLoop's single loop is the `goaloop run` orchestrator; `/goal-run` neither wraps `/loop` nor schedules wakeups |

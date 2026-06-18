@@ -138,7 +138,7 @@ going even if you close Claude Code.
 ```
 > /goal-run                  # start + watch from Claude Code
 $ goaloop status <name>      # check on it from the shell
-$ tail -f ~/.goaloop/<name>/.goaloop/loop.log   # watch live
+$ tail -f ~/.goaloop/<name>/.goaloop/orchestrator.log   # watch live
 $ goaloop continue <name>    # release the next attempt (copilot mode)
 $ goaloop stop <name>        # stop early
 ```

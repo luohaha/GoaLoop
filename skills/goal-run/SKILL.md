@@ -72,7 +72,7 @@ auto|copilot` to choose pacing vs. per-attempt human approval (default
 
 Tell the user it started, and that it runs in the background
 independent of this session. Mention they can watch it with
-`goaloop status <name>` or `tail -f ~/.goaloop/<name>/.goaloop/loop.log`.
+`goaloop status <name>` or `tail -f ~/.goaloop/<name>/.goaloop/orchestrator.log`.
 
 ## Step 4 — Relay progress
 
@@ -108,7 +108,7 @@ the user the Runner is blocked and quote the reason, and let them decide
 Status shows an **error** give-up and the process has exited. The
 orchestrator retried a crash / malformed terminator / transient error up
 to its bound and gave up (infrastructure, not a goal decision). Read the
-latest `attempts/NNN.md` and `loop.log` tail, tell the user what went
+latest `attempts/NNN.md` and `orchestrator.log` tail, tell the user what went
 wrong, and let them decide. Do not auto-restart.
 
 ### Copilot mode (per-attempt approval)

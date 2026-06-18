@@ -94,7 +94,7 @@ def _run_foreground(ws: Path, args: argparse.Namespace) -> int:
     state.mkdir(parents=True, exist_ok=True)
     _pid_path(ws).write_text(str(os.getpid()))
 
-    log_fh = open(state / "loop.log", "a", buffering=1)
+    log_fh = open(state / "orchestrator.log", "a", buffering=1)
 
     def log(msg: str) -> None:
         line = f"{_ts()} {msg}"
@@ -140,7 +140,7 @@ def _run_background(ws: Path, args: argparse.Namespace) -> int:
 
     print(f"GoaLoop started in background (PID {proc.pid})")
     print(f"  workspace: {ws}")
-    print(f"  log:       {state / 'loop.log'}")
+    print(f"  log:       {state / 'orchestrator.log'}")
     print(f"  status:    goaloop status {args.workspace}")
     print(f"  stop:      goaloop stop {args.workspace}")
     return 0
