@@ -378,7 +378,7 @@ anti-cheat property (Runner N has no memory of Runner N−1). Same-session
 A tiny checkpoint at `.goaloop/state.json` holds the active session id for
 crash recovery; on a give-up (`error`) the session is cleared.
 
-### The two skills
+### The skills
 
 #### `/goal-init`
 
@@ -456,6 +456,30 @@ The orchestrator, not the Manager, performs the per-attempt mechanics:
 The Manager is otherwise passive: it does not read `goal.md` to make
 decisions (only to quote to the user), does not run Verification, does not
 modify the workspace, does not update `learnings.md`.
+
+#### `/goal-flash`
+
+A fast path that collapses `/goal-init` + `/goal-run` into one shot, for
+tasks the user can state in a sentence — where the seven-question interview
+is overkill. Instead of interviewing, it **infers** a complete `goal.md`
+from the short description (workspace name auto-named, Hard Constraints
+defaulted to `None`, Environment & Tools reverse-engineered from the
+verification command, Initial Context omitted unless useful), shows it to
+the user, and starts the orchestrator immediately — no question-at-a-time,
+no per-section confirmation.
+
+The one invariant it does **not** relax is verification rigor (Philosophy
+§2): the only thing flash may not infer is a fabricated check. If a concrete
+verification cannot be derived from the description, flash refuses and sends
+the user to `/goal-init` (or asks that single question) rather than writing
+a placeholder. This keeps the load-bearing guarantee intact while removing
+the friction for already-clear tasks.
+
+Because the goal was inferred rather than interviewed, `goal.md`'s
+mutability mid-run (the steering wheel — see Human guidance protocol) is the
+correction channel: flash surfaces the inferred Verification and any
+assumptions so the user can catch a wrong inference fast and edit `goal.md`,
+or `goaloop stop`. Progress relay after start is identical to `/goal-run`.
 
 The Runner, on its end, follows this fixed workflow:
 
