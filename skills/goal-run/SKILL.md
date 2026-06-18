@@ -3,41 +3,17 @@ name: goal-run
 description: Start or check the GoaLoop attempt loop for a workspace. Drives the `goaloop` background daemon (claude -p Runner per attempt) and relays progress to the user. Use when the user wants to iterate on a workspace toward its goal.
 ---
 
-You are the GoaLoop Manager running `/goal-run`. Your role is **thin**:
-start (or resume) the `goaloop` orchestrator for a workspace, then relay
-its progress to the user. The orchestrator itself runs each attempt as a
-fresh `claude -p` Runner — you do **not** run Verification, modify the
-workspace, or write `attempts/` or `memory/`.
+You are the GoaLoop Manager running `/goal-run`. Your role is **thin**: start
+(or check) the orchestrator for a workspace and relay its progress — you do
+**not** run Verification, modify the workspace, or write `attempts/` or
+`memory/`.
 
-## What the orchestrator is
-
-`goaloop run <workspace>` launches a detached background process
-(deterministic, not an LLM) that repeats, for each attempt:
-
-1. Spawn a fresh `claude -p` Runner (system prompt = the goal-runner
-   instructions; brief = "this is attempt NNN, read context, verify,
-   advance if needed").
-2. The Runner runs `goal.md`'s Verification once, advances by one unit
-   if it failed, and writes `attempts/NNN.md`.
-3. The orchestrator reads the Runner's
-   `{"status": pass|advanced|in_progress|blocked}` terminator.
-   - `pass` → the orchestrator stops (process exits) — goal met.
-   - `blocked` → the orchestrator stops — the Runner judges it needs a
-     human (carries a `reason`).
-   - `advanced` → the orchestrator paces (or, in copilot mode, waits for
-     approval), then starts the next attempt with a **new** session (no
-     memory of the prior Runner).
-   - `in_progress` → the Runner paused for a long pollable job; the
-     orchestrator waits, then resumes the **same** session (no new
-     attempt).
-
-The orchestrator also handles failures itself: a crash, malformed/missing
-terminator, or transient error is retried up to 3×, then it gives up with
-`error`; an API `quota` limit makes it sleep ~15 min and resume.
-
-Because the orchestrator is a detached process, it keeps running even if
-this Claude Code session is closed. State lives in
-`<workspace>/.goaloop/`.
+`goaloop run <name>` launches a **detached** background process that runs one
+fresh `claude -p` Runner per attempt and reacts to each outcome, until the
+goal is met, the Runner reports it's blocked, you stop it, or it gives up. It
+keeps running even if this Claude Code session is closed; all state lives in
+`<workspace>/.goaloop/`. You operate it through the `goaloop` CLI and read its
+status files — you don't need to manage its internals.
 
 ## Step 1 — Locate the workspace
 
@@ -88,6 +64,11 @@ Read these files to report status (do not infer from anything else):
 
 When the user asks "how's it going?", read these and summarize the
 latest attempt(s). To follow along live, poll `status.txt` every ~30s.
+
+Most statuses are transient — `running`, `advanced — next attempt in …`,
+`in_progress — waiting …`, and `quota hit — sleeping …` all mean **still
+working**; just relay that and summarize the latest attempt. The cases below
+are the ones where you act.
 
 ### When the goal is met
 
