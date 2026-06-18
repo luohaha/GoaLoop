@@ -11,7 +11,7 @@ read context, verify, advance by one unit if needed, record — until the
 verification passes or you stop it.
 
 The framework is a lean Python package (`goaloop`: a `claude -p` adapter,
-the attempt loop, and a `run`/`status`/`stop`/`continue` CLI) plus two
+the attempt loop, and a `run`/`status`/`stop`/`continue` CLI) plus the
 Claude Code skills and the Runner's system prompt. The orchestrator is
 detached, so it keeps iterating even if you close the Claude Code session
 that started it. On a Claude Code subscription, `claude -p` is
@@ -41,8 +41,9 @@ rationale.
 ## Architecture in one picture
 
 ```
-You ── /goal-init → interviews you, writes goal.md
-   └── /goal-run  → starts the orchestrator, then relays its status
+You ── /goal-init  → interviews you, writes goal.md
+   ├── /goal-flash → one-shot: infers goal.md from a sentence, then runs
+   └── /goal-run   → starts the orchestrator, then relays its status
 
       goaloop run <name>   (detached background process; not an LLM)
         │
@@ -125,6 +126,18 @@ Then start it (either way):
 > /goal-run                  # via Claude Code: starts the orchestrator, relays status
 $ goaloop run <name>         # or straight from the shell
 ```
+
+### Fast path: `/goal-flash`
+
+When the task is already clear enough to state in a sentence, the
+seven-question interview is overkill. `/goal-flash <one-line task>`
+infers a complete `goal.md` in one shot (workspace name, constraints,
+environment — all derived; no question-at-a-time), shows it to you, and
+starts the orchestrator immediately. The same hard rule still applies:
+if a concrete verification can't be inferred, it refuses and sends you
+to `/goal-init` rather than fabricating one. Since the goal was inferred,
+`goal.md` stays the steering wheel — edit it mid-run if the inference was
+off, or `goaloop stop`.
 
 ## Running
 
