@@ -170,8 +170,7 @@ class Orchestrator:
             return ""
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.cursor_path.write_text(str(len(content)))  # delivered — advance
-        return (f"\n## Human guidance (NEW, from suggestions.md — address "
-                f"this attempt)\n\n{new}\n")
+        return f"\n## Human guidance (NEW — address this attempt)\n\n{new}\n"
 
     def _wait_for_continue(self, n: int) -> None:
         """Copilot mode: block until the human approves the next attempt.
@@ -191,16 +190,11 @@ class Orchestrator:
 
     def _build_brief(self, n: int) -> str:
         guidance = self._suggestions_section()
-        return f"""You are GoaLoop Runner for the workspace at {self.ws}.
+        return f"""Workspace: {self.ws}
 This is attempt {n:03d}; write your attempt record to attempts/{n:03d}.md.
-
-Read goal.md, memory/learnings.md, and the most recent attempts/*.md for
-context, then run one attempt per your system-prompt workflow. goal.md holds
-permanent guidance (authoritative if it changed since the last attempt); any
-per-attempt human notes appear below.
 {guidance}
-End your final message with a single line that is one of these JSON objects
-(see your system prompt for when to use each):
+Run one attempt per your system-prompt workflow, then end your final message
+with a single line that is exactly one of these JSON objects:
   {{"status": "pass", "verification": "<one-line summary>"}}
   {{"status": "advanced", "summary": "<one paragraph>"}}
   {{"status": "in_progress", "wait_secs": <int>, "note": "<what you're waiting on>"}}
