@@ -1,17 +1,21 @@
 # GoaLoop
 
-> A goal-driven multi-attempt iteration framework that runs on a
-> Claude Code subscription session.
+> A goal-driven multi-attempt iteration framework — a Ralph loop over
+> `claude -p`, with just enough structure to be safe.
 
 GoaLoop turns "iterate until the target is met" into a small, sharp
 protocol on top of Claude Code. You write a `goal.md` that spells out
-what "done" looks like and how to verify it. GoaLoop then runs a thin
-**Manager** in your main CC session that spawns fresh-context
-**Runner** subagents per attempt, until the verification passes or
-you stop the loop.
+what "done" looks like and how to verify it. A small background
+orchestrator then runs each attempt as a fresh **`claude -p` Runner** —
+read context, verify, advance by one unit if needed, record — until the
+verification passes or you stop it.
 
-The framework is two skill files and one subagent definition. There is
-no daemon, no subprocess pool, no TUI, no Python orchestrator.
+The framework is a lean Python package (`goaloop`: a `claude -p` adapter,
+the attempt loop, and a `run`/`status`/`stop`/`continue` CLI) plus two
+Claude Code skills and the Runner's system prompt. The orchestrator is
+detached, so it keeps iterating even if you close the Claude Code session
+that started it. On a Claude Code subscription, `claude -p` is
+subscription-covered — no per-token API rates.
 
 ## Why
 
@@ -26,11 +30,10 @@ target, iterate, verify, repeat:
 - Cost optimization
 - Security hardening
 
-Existing tools for this pattern either run agents as subprocesses
-(paying API rates per token) or bake in domain assumptions like
-"artifact = GitHub PR" and "isolation = git worktree". GoaLoop does
-neither. The runtime is your Claude Code subscription session plus
-subagent calls; the framework makes no domain assumptions.
+Existing tools for this pattern tend to bake in domain assumptions like
+"artifact = GitHub PR" and "isolation = git worktree". GoaLoop makes no
+domain assumptions — your `goal.md` and its verification scripts carry
+all the domain knowledge.
 
 See [`docs/design.md`](docs/design.md) for the full design and
 rationale.
@@ -38,51 +41,57 @@ rationale.
 ## Architecture in one picture
 
 ```
-Your Claude Code session (Manager)
-  │
-  │  /goal-init  → interviews you, writes goal.md
-  │  /goal-run   → does one attempt:
-  │     │
-  │     ▼
-  │   Spawn goal-runner subagent (fresh context per attempt)
-  │     │
-  │     │  reads goal.md, learnings.md, recent attempts/
-  │     │  runs the Verification procedure
-  │     │  if fail → advances workspace by one unit
-  │     │  writes attempts/NNN.md; optionally updates learnings.md
-  │     │  returns JSON report
-  │     ▼
-  │   Manager: pass → stop; pending/advanced → ScheduleWakeup("/goal-run")
-  │
-  └── /goal-run self-schedules its next attempt — no /loop wrapper
+You ── /goal-init → interviews you, writes goal.md
+   └── /goal-run  → starts the orchestrator, then relays its status
+
+      goaloop run <name>   (detached background process; not an LLM)
+        │
+        └── while not done:               ← paces itself (--interval)
+              spawn a fresh `claude -p` Runner for attempt NNN
+                │  reads goal.md, learnings.md, recent attempts/
+                │  runs the Verification procedure (once)
+                │  if fail → advances the workspace by one unit
+                │  writes attempts/NNN.md; maybe updates learnings.md
+                │  ends with {"status": pass | advanced | in_progress | blocked}
+                ▼
+       pass → exit (done)   blocked → exit (needs human)
+       advanced → next attempt, new session (copilot: wait for approval)
+       in_progress → wait wait_secs, resume same session
 ```
 
 ## Install
 
-GoaLoop is two skill files plus one custom subagent type. Two ways
-to install:
+Two pieces: the `goaloop` CLI (the orchestrator), and the Claude Code
+skills (the Manager front-end).
 
-**Option A — Local to one project (recommended for trying it out):**
+**1. Install the `goaloop` CLI** (stdlib-only, Python ≥ 3.10):
 
 ```bash
 git clone <repo-url> ~/GoaLoop
-cd ~/your-working-project
-mkdir -p .claude
-ln -s ~/GoaLoop/skills .claude/skills
-ln -s ~/GoaLoop/agents .claude/agents
+pip install -e ~/GoaLoop          # provides the `goaloop` command
+# or run without installing:  python3 -m goaloop ...  (from ~/GoaLoop)
 ```
 
-**Option B — Globally for all CC sessions:**
+The CLI reads the Runner's system prompt from `~/GoaLoop/agents/goal-runner.md`
+(set `GOALOOP_RUNNER_PROMPT` to override). It shells out to `claude`, so the
+Claude Code CLI must be on your `PATH` and authenticated.
+
+**2. Install the skills** — either local to one project:
 
 ```bash
-git clone <repo-url> ~/GoaLoop
-mkdir -p ~/.claude/skills ~/.claude/agents
-cp -r ~/GoaLoop/skills/* ~/.claude/skills/
-cp -r ~/GoaLoop/agents/* ~/.claude/agents/
+cd ~/your-working-project && mkdir -p .claude
+ln -s ~/GoaLoop/skills .claude/skills
+```
+
+…or globally for all CC sessions:
+
+```bash
+mkdir -p ~/.claude/skills && cp -r ~/GoaLoop/skills/* ~/.claude/skills/
 ```
 
 Verify by opening Claude Code and typing `/goal-init` — it should be
-recognized.
+recognized. (You can also drive the orchestrator entirely from the shell
+with `goaloop run`, skipping the skills.)
 
 ## Quickstart
 
@@ -90,10 +99,11 @@ recognized.
 > /goal-init
 ```
 
-Claude interviews you with seven questions: workspace path, objective,
-hard constraints, how to verify the objective (concretely!), how to
-verify each constraint, what environment/tools the verification needs,
-and any initial context.
+Claude interviews you with seven questions: workspace name (the
+workspace lives at `~/.goaloop/<name>`), objective, hard constraints,
+how to verify the objective (concretely!), how to verify each
+constraint, what environment/tools the verification needs, and any
+initial context.
 
 The interview is **strict** about getting concrete verification — if
 you can't articulate a real check, GoaLoop refuses to write the
@@ -109,41 +119,65 @@ When the interview completes, your workspace looks like:
 └── attempts/         # one file per attempt, write-once audit trail
 ```
 
-Then start it:
+Then start it (either way):
 
 ```
-> /goal-run                  # self-paces until pass — no /loop needed
+> /goal-run                  # via Claude Code: starts the orchestrator, relays status
+$ goaloop run <name>         # or straight from the shell
 ```
 
 ## Running
 
-GoaLoop runs as a single self-driven loop. There is no manual one-shot
-mode in v0.1, and no outer `/loop` wrapper: on `advanced` or `pending`
-`/goal-run` schedules its own next attempt via
-`ScheduleWakeup(prompt: "/goal-run")`, and on `pass` it omits the
-wakeup so the loop ends. You type `/goal-run` once and it keeps going.
-
-Invocation:
+GoaLoop runs as a single self-driven loop — the `goaloop run`
+orchestrator (a deterministic process, not an LLM). It is not wrapped in
+`/loop`: in the default `auto` mode it paces itself between attempts
+(`--interval`, default 30s), runs each attempt as a fresh `claude -p`
+Runner, and exits on `pass`. Because it's a detached process, it keeps
+going even if you close Claude Code.
 
 ```
-> /goal-run
+> /goal-run                  # start + watch from Claude Code
+$ goaloop status <name>      # check on it from the shell
+$ tail -f ~/.goaloop/<name>/.goaloop/orchestrator.log   # watch live
+$ goaloop continue <name>    # release the next attempt (copilot mode)
+$ goaloop stop <name>        # stop early
 ```
 
-The loop terminates when:
+The orchestrator terminates when:
 
-- The Runner reports `pass`, the Manager therefore omits the next
-  `ScheduleWakeup`, and the loop ends naturally.
-- You press `Esc` (or close the session).
-- The 7-day auto-expiry on scheduled wakeups fires.
+- The Runner reports `pass` — goal met; the process exits.
+- The Runner reports `blocked` — it judges the goal unreachable without a
+  human; the process exits and `/goal-run` quotes the reason.
+- It gives up with `error` after bounded retries of malformed / failing
+  attempts (a broken-Runner guard, not a goal condition).
+- You run `goaloop stop <name>` (SIGTERM).
 
-You stay in control throughout: read what the Runner did after each
-attempt (relayed by the Manager), drop suggestions into the
-conversation (verbatim-relayed to the next Runner), or edit `goal.md`
-to amend the target. To stop sooner than `pass`, press Esc.
+(An API `quota` limit is not a stop — the orchestrator sleeps and resumes
+the same session indefinitely.)
 
-> ⚠️ Don't wrap `/goal-run` in `/loop`. The skill already self-schedules
-> via `ScheduleWakeup`; an interval-mode `/loop 5m /goal-run` could not
-> be ended by the skill anyway. Just run `/goal-run`.
+You stay in control throughout: read what each attempt did via
+`/goal-run` or `goaloop status`; **edit `goal.md`** for a permanent
+change or **append to `suggestions.md`** for a transient per-attempt
+note — the next attempt picks it up. There's no live conversation into a
+running Runner.
+
+### Configuration & modes
+
+An optional `<workspace>/config.yaml` sets defaults with flat keys —
+`model` (model id for `claude -p`), `interval` (seconds between attempts,
+default 30), and `mode` (`auto` default, or `copilot`). CLI flags
+(`--model`, `--interval`, `--mode`) override `config.yaml`, which
+overrides the built-in defaults.
+
+In **copilot mode** the orchestrator pauses after each `advanced` attempt
+and waits for your approval before the next one; release it with
+`goaloop continue <name>`. (`pass`/`blocked`/`error` are terminal, and
+`in_progress` resumes automatically — only `advanced` waits.)
+
+`suggestions.md` is an optional async channel: append a one-off note and
+the next fresh attempt sees the text added since it was last read, once.
+Use `goal.md` for permanent/structural changes, `suggestions.md` for
+transient nudges (e.g. left while AFK).
 
 ## Workspace contents
 
@@ -152,6 +186,8 @@ After running, the workspace looks like:
 ```
 <workspace>/
 ├── goal.md
+├── config.yaml           # optional: model / interval / mode
+├── suggestions.md        # optional: async per-attempt notes
 ├── memory/
 │   └── learnings.md      # ~4KB cap; Runner curates this
 └── attempts/
@@ -172,17 +208,22 @@ After running, the workspace looks like:
 - **Verification is load-bearing.** The `goal.md` Verification section
   is a literal command/procedure, written by you at init time. The
   Runner executes it; never makes up a judgment.
-- **Three-state verification.** `pass` / `fail` / `pending` —
-  long-running checks (benchmarks, training) return `pending` while
-  in flight, and the Manager schedules a wake-up to check back.
-- **Anti-cheat by time.** Each Runner is a fresh subagent. The Runner
-  in attempt N judges what attempt N−1 left behind, with no shared
-  context. Even for LLM-as-judge verification, no nested subagent is
+- **Two-state verification, four terminators.** Verification itself is
+  `pass` / `fail`, but each Runner ends with one of four statuses — `pass`
+  (done), `advanced` (did one unit of work, go again), `in_progress`
+  (paused to wait out a long pollable job, resume the same session), or
+  `blocked` (stuck, needs a human). Long-running checks are completed
+  inside one attempt rather than split across attempts.
+- **Anti-cheat by time.** Each Runner is a fresh `claude -p` session.
+  The Runner in attempt N judges what attempt N−1 left behind, with no
+  shared context. Even for LLM-as-judge verification, no nested agent is
   needed — the time separation gives you arm's-length judging.
-- **Honest about what the framework can enforce.** No budget caps, no
-  forced attempt limits, no `goal.md` keys for things GoaLoop can't
-  actually enforce. The only real termination paths are "Verification
-  passes" and "human stops the loop".
+- **Honest about what the framework can enforce.** No budget caps and no
+  forced attempt limits in `goal.md` — GoaLoop can read each attempt's
+  reported cost but won't pretend to cap it mid-stream. The terminal states
+  are `pass` (goal met), `blocked` (Runner judges it needs a human),
+  `error` (the orchestrator gives up after bounded retries), and human
+  `goaloop stop`.
 
 ## When NOT to use GoaLoop
 
@@ -190,18 +231,18 @@ After running, the workspace looks like:
   "what success looks like" is purely a human judgment call, the
   framework's load-bearing assumption breaks. Use direct conversation
   with Claude instead.
-- When the iteration unit is sub-second. Manager+Runner per attempt
-  has a few-second floor.
+- When the iteration unit is sub-second. Spawning a `claude -p` Runner
+  per attempt has a multi-second floor.
 - When you need parallel exploration across independent hypotheses.
-  GoaLoop runs one Runner at a time per Manager session. Multiple
-  Claude Code sessions can run multiple workspaces in parallel, but
-  there's no built-in coordination.
+  Each orchestrator runs one Runner at a time. You can run multiple workspaces
+  in parallel (`goaloop run` each), but there's no built-in coordination
+  between them.
 
 ## Status
 
-Pre-1.0. The design is documented in [`docs/design.md`](docs/design.md);
-the skills and agent are implemented but not yet battle-tested across
-diverse domains.
+v0.1. The `goaloop` loop, CLI, and skills are implemented and pass an
+end-to-end smoke test; not yet battle-tested across diverse domains. The
+design and rationale are in [`docs/design.md`](docs/design.md).
 
 ## License
 

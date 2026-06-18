@@ -1,16 +1,30 @@
 # GoaLoop — Design Document
 
 > **One-sentence definition.** GoaLoop is a goal-driven multi-attempt
-> iteration framework that runs on a Claude Code subscription session: the
-> user's main session acts as a thin Manager that orchestrates fresh-context
-> Runner subagents, each Runner executes the verification procedure spelled
-> out in `goal.md` and one unit of work toward the goal, and the loop
-> terminates when verification passes or the human stops it.
+> iteration framework: a thin Manager (the user's Claude Code session,
+> driven by skills) launches a small background orchestrator, the
+> orchestrator runs each attempt as a fresh `claude -p` Runner that executes
+> the verification procedure spelled out in `goal.md` plus one unit of work
+> toward the goal, and the orchestrator terminates when verification passes
+> or the human stops it.
 
 ## Status
 
-Design phase. No implementation yet. This document is the canonical reference
-for the architecture before any code is written.
+Implemented (v0.1). The runtime is the `goaloop` Python package
+(`goaloop/`): a `claude -p` adapter, the attempt loop, and a
+`run`/`status`/`stop`/`continue` CLI. This document is the canonical
+reference for the architecture.
+
+> **Note on the runtime pivot.** An earlier draft of this design ran the
+> Runner as a Claude Code *subagent* (spawned via the `Agent` tool from the
+> Manager session), specifically to avoid `claude -p` under the belief that
+> `claude -p` always bills at API rates. That belief was wrong: `claude -p`
+> authenticated with a Claude Code subscription is subscription-covered, the
+> same as the interactive session. v0.1 therefore uses `claude -p` Runners
+> driven by a detached orchestrator — which restores the true "fresh process
+> per iteration, all state on disk" Ralph-loop shape and lets the
+> orchestrator survive the Manager session closing. The sections below
+> describe this runtime.
 
 ## Motivation
 
@@ -33,49 +47,51 @@ the agent's capability; it is the surrounding structure: how to express the
 goal, how to verify it objectively, how to accumulate knowledge across
 attempts, how to terminate cleanly.
 
-Existing implementations of this pattern tend to fall into two traps:
+Existing implementations of this pattern tend to fall into one trap:
 
-1. **Subprocess-based agents** (one process per iteration, driven by an
-   orchestrator). This pattern works but costs full API rates per token
-   spent, since each subprocess is a separate non-interactive session not
-   covered by Claude Code's subscription. Long iteration loops become
-   expensive.
+- **Domain-specific frameworks** that bake assumptions into the core (the
+  artifact is a GitHub PR, isolation is a git worktree, there is a "deploy"
+  phase between commit and verify, iterations have a fixed-cadence
+  multi-phase state machine). These work well for the domain they were
+  built for but resist generalization without invasive plugin layers.
 
-2. **Domain-specific frameworks** that bake assumptions into the core (the
-   artifact is a GitHub PR, isolation is a git worktree, there is a "deploy"
-   phase between commit and verify, iterations have a fixed-cadence
-   multi-phase state machine). These work well for the domain they were
-   built for but resist generalization without invasive plugin layers.
-
-GoaLoop avoids both traps. The runtime is the user's Claude Code interactive
-session plus subagent calls — entirely subscription-covered, no subprocess
-overhead. The framework provides only the conventions needed for the
-iteration pattern itself — goal specification, manager–runner role split,
-verification protocol — and makes no domain assumptions.
+GoaLoop avoids that trap. Each Runner is a fresh `claude -p` process — and
+when `claude -p` is authenticated with a Claude Code subscription it is
+subscription-covered, so the orchestrator does not incur per-token API
+rates. The
+framework provides only the conventions needed for the iteration pattern
+itself — goal specification, manager–runner role split, verification
+protocol — and makes no domain assumptions.
 
 ## Philosophy
 
 Four guiding principles, each constraining what GoaLoop will and will not do.
 
-### 1. Manager–Runner split, both on subscription
+### 1. Manager–Runner split
 
-GoaLoop has exactly two roles, and both run in the user's Claude Code
-session — neither is a `claude -p` subprocess.
+GoaLoop has three roles with a clean boundary (the Manager and the
+orchestrator are distinct processes; the Runner is spawned per attempt).
 
 - **Manager** is the user's main CC session, driven by the two GoaLoop
-  skills. It is a thin orchestrator: it spawns Runner subagents, receives
-  their reports, talks to the user, and decides when to schedule the next
-  iteration. It does not verify, does not modify the workspace, does not
-  curate memory.
-- **Runner** is a subagent (spawned via the `Agent` tool with a custom
-  `goal-runner` agent type) that does one complete attempt: read context,
-  run the Verification procedure, do one unit of work if needed, update
-  memory files, write a per-attempt record, return a report.
+  skills. It is thin: it starts/stops the `goaloop` orchestrator, reads the
+  orchestrator's status files, and talks to the user. It does not verify,
+  does not modify the workspace (except `goal.md` edits the user approves),
+  does not curate memory.
+- **Orchestrator** is a small detached process (`goaloop run`) that paces
+  attempts and reacts to each Runner's terminator. It is deterministic — not
+  an LLM. It holds no authoritative state — only a tiny checkpoint (the
+  active session id) so a crashed or quota-paused attempt can resume rather
+  than restart.
+- **Runner** is a fresh `claude -p` process the orchestrator spawns per
+  attempt. It does one complete attempt: read context, run the Verification
+  procedure, do one unit of work if needed, update memory files, write a
+  per-attempt record, end its turn with a status terminator.
 
-Each Runner invocation is a fresh subagent — no memory of prior runs. This
-restores the "fresh session per iteration" property without paying API
-rates. The Runner is bounded by its own subagent context budget, which keeps
-each attempt focused.
+Each Runner invocation is a fresh `claude -p` session — no memory of prior
+runs, context only via workspace files. This is the genuine "fresh process
+per iteration" property, and on a Claude Code subscription it does not pay
+API rates. Because the orchestrator is detached, it keeps iterating even if
+the Manager session closes.
 
 ### 2. Verification rigor over runtime referee
 
@@ -97,18 +113,18 @@ the combination of two design choices already mandated elsewhere:
    the human's authored input. Runners read these criteria; they do not
    author them.
 
-2. **Each Runner is a fresh subagent, and Verification runs once at the
-   start of each attempt.** The verdict produced in attempt N is therefore
-   formed by Runner N reading the state that Runner N−1 left behind, with
-   no shared context to Runner N−1's reasoning. The "judge" is always a
-   fresh agent looking at the workspace and the immutable criteria — never
-   the same agent that produced the artifact.
+2. **Each Runner is a fresh `claude -p` session, and Verification runs once
+   at the start of each attempt.** The verdict produced in attempt N is
+   therefore formed by Runner N reading the state that Runner N−1 left
+   behind, with no shared context to Runner N−1's reasoning. The "judge" is
+   always a fresh process looking at the workspace and the immutable
+   criteria — never the same process that produced the artifact.
 
 The arm's-length-referee property emerges from the time-series structure
 of attempts, not from a parallel referee process. Runner N judges Runner
 N−1's work because Runner N runs first-thing-in-the-attempt and has no
 memory of Runner N−1. This holds uniformly for every Verification type
-(shell threshold, boolean, LLM-as-judge): no nested subagent is required
+(shell threshold, boolean, LLM-as-judge): no nested agent is required
 even for judge-style criteria — the Runner reads the rubric itself, scores
 the artifact directly, and the structural independence comes from being a
 different Runner than the one that wrote the artifact.
@@ -120,35 +136,45 @@ itself useful product feedback to the human.
 
 ### 3. Honest about what the framework can enforce
 
-GoaLoop is a thin layer of conventions on top of Claude Code. It cannot:
+GoaLoop is a thin layer of conventions on top of `claude -p`. What it can
+and cannot do shifted slightly with the `claude -p` runtime:
 
-- Count tokens (not exposed to skills).
-- Stop a running loop programmatically (only `Esc` / session close / 7-day expiry).
-- Sandbox the agent from the user's workspace.
-- Verify that the Runner ran the verification procedure honestly (next
-  Runner's verification catches it, but not in real time).
+- It **can** stop the orchestrator programmatically (`goaloop stop` sends SIGTERM)
+  and **can** read each attempt's reported `total_cost_usd` from the
+  stream-json `result` event (logged per attempt). It still does **not**
+  *enforce* a token/cost budget — knowing the cost is not the same as
+  capping it mid-stream — so no `max_tokens` appears in `goal.md`.
+- It cannot sandbox the Runner from the user's workspace (`claude -p` runs
+  with `--dangerously-skip-permissions` in the workspace).
+- It cannot verify in real time that the Runner ran the procedure honestly;
+  the next Runner's fresh-context verification catches dishonesty, but not
+  instantly.
 
 The design accepts these limits rather than papering over them. Budget
-enforcement, attempt counters as termination conditions, and "max
-consecutive failures" do not appear in `goal.md` — promising them would be a
-lie. The two real termination paths are: (a) Verification passes and the
-Manager does not schedule the next wakeup, (b) the human stops the loop.
+enforcement and attempt counters do not appear in `goal.md`. The
+orchestrator does keep one operational safety valve — it gives up after
+bounded retries of *malformed* or failing attempts (crashes, missing
+terminators; `MAX_CONSECUTIVE_FAILURES`) — but that is a guard against a
+broken Runner, not a goal-level termination condition. The real termination
+paths remain: (a) Verification passes and the orchestrator exits, (b) the
+Runner judges itself `blocked`, (c) the orchestrator gives up with `error`,
+(d) the human stops it.
 
 ### 4. Ralph loop spirit: dumb loop, state in files
 
 Geoffrey Huntley's Ralph loop pattern — `while :; do claude -p < PROMPT.md;
 done` — works because the loop is dumb, the prompt is fixed, and all state
-lives on disk. GoaLoop preserves the spirit while changing the runtime:
+lives on disk. GoaLoop *is* a Ralph loop, with thin structure added:
 
-| Ralph (`claude -p`) | GoaLoop (skills + subagent) |
+| Ralph (`claude -p`) | GoaLoop |
 |---|---|
-| `while :; do claude -p < PROMPT.md` | `/goal-run`, self-scheduling via `ScheduleWakeup(prompt: "/goal-run")` |
-| `PROMPT.md` (fixed instruction) | `/goal-run` skill body |
-| Subprocess per iteration | Fresh subagent per iteration |
+| `while :; do claude -p < PROMPT.md` | `goaloop run` orchestrator, one `claude -p` per attempt |
+| `PROMPT.md` (fixed instruction) | `agents/goal-runner.md` as `--append-system-prompt` + a per-attempt brief |
+| Subprocess per iteration | Fresh `claude -p` session per attempt |
 | `PLAN.md` + scattered state files | `goal.md` + `memory/learnings.md` + `attempts/NNN.md` |
-| `grep DONE PLAN.md` to terminate | Manager omits `ScheduleWakeup` after Runner reports pass |
+| `grep DONE PLAN.md` to terminate | orchestrator reads the Runner's `{"status":"pass"}` terminator and exits |
 | No evaluator (or `grep` as evaluator) | Runner executes `goal.md`'s Verification procedure |
-| API billing | Subscription |
+| API billing | Subscription (subscription-authenticated `claude -p`) |
 
 ## Architecture
 
@@ -171,37 +197,66 @@ GPUs) are not GoaLoop's concern.
 
 **Manager**
 The user's main CC session, driven by the `/goal-init` and
-`/goal-run` skills. Spawns Runner subagents, receives their reports,
-talks to the user, decides whether to schedule the next iteration. Holds no
-authoritative state itself — the workspace files are the source of truth.
+`/goal-run` skills. Starts/stops the orchestrator, reads its status files,
+talks to the user. Holds no authoritative state itself — the workspace files
+are the source of truth.
+
+**Orchestrator**
+The `goaloop` background process (`goaloop run <workspace>`). Deterministic,
+not an LLM. For each attempt it mints a session id, spawns one `claude -p`
+Runner, parses the Runner's terminator, and branches: exit (on `pass` or
+`blocked`), pace and start the next attempt with a fresh session (on
+`advanced`), or wait then resume the same session (on `in_progress`). It
+persists only a small checkpoint (`.goaloop/state.json` — the active session
+id) so a crashed or quota-paused attempt resumes the same session instead of
+restarting. On transient network errors it resumes the same session (bounded
+retries); on an API quota hit it sleeps for a cool-down and resumes
+indefinitely; on an unrecoverable give-up it exits with `error`.
 
 **Runner**
-A subagent (custom `goal-runner` agent type) spawned per attempt. Reads
-the workspace, runs Verification, optionally does one unit of advance,
-updates `learnings.md`, writes `attempts/NNN.md`, returns a structured
-report to the Manager. Fresh context every invocation — no memory of prior
-runs except via workspace files.
+A fresh `claude -p` process spawned per attempt, with `agents/goal-runner.md`
+as its appended system prompt. Reads the workspace, runs Verification,
+optionally does one unit of advance, updates `learnings.md`, writes
+`attempts/NNN.md`, and ends its turn with a `{"status":
+pass|advanced|in_progress|blocked}` terminator. Fresh context every NEW
+attempt — no memory of prior runs except via workspace files.
 
 **Verification**
 The procedure defined in `goal.md`'s Verification section. The Runner
-executes it; the result is one of three states: `pass`, `fail`, or
-`pending` (verification is in flight, e.g. a long-running benchmark started
-but not yet complete).
+executes it within its turn; the result is one of two states: `pass` or
+`fail`. (Verification is two-state; the Runner's *terminators* are four —
+see below.) Long-running steps (benchmarks, training) are waited on inside
+the Runner — either synchronously, or by pausing the attempt with
+`in_progress` and resuming after a timed wait so the wait itself burns no
+tokens.
 
 ### Workspace layout
 
 ```
 <workspace>/
 ├── goal.md            # Objective + Hard Constraints + Verification spec
+├── config.yaml        # Optional: model / interval / mode (see below)
+├── suggestions.md     # Optional: async per-attempt human notes (see below)
 ├── memory/
 │   └── learnings.md   # Run-level curated knowledge; Runner self-maintains, ~4KB cap
-└── attempts/
-    ├── 001.md         # Per-attempt factual record, written by the Runner of that attempt
-    ├── 002.md
-    └── ...            # Append-only: each file is written once, never modified
+├── attempts/
+│   ├── 001.md         # Per-attempt factual record, written by the Runner of that attempt
+│   ├── 002.md
+│   └── ...            # Append-only: each file is written once, never modified
+└── .goaloop/          # Orchestrator-private state (not part of the goal record)
+    ├── state.json     # Checkpoint: active session id for crash/quota resume
+    ├── status.txt     # Current one-line orchestrator status (read by /goal-run)
+    ├── attempt_complete.json  # Last completed attempt's {attempt, status, cost_usd}
+    ├── suggestions.cursor     # Byte offset into suggestions.md already shown
+    ├── continue.json  # copilot-mode approval token (written by `goaloop continue`)
+    ├── orchestrator.log       # Per-attempt log: Runner messages, tool calls, results
+    └── pipeline.pid   # PID of the running orchestrator (for status/stop)
 ```
 
-That is the entire structure GoaLoop requires. Anything else (scripts the
+The `goal.md` + `memory/` + `attempts/` triple is the goal record GoaLoop
+requires; `config.yaml` and `suggestions.md` are optional human inputs, and
+`.goaloop/` is the orchestrator's own bookkeeping and can be deleted
+between runs without losing the audit trail. Anything else (scripts the
 verification uses, source code being modified, datasets, etc.) lives wherever
 the user already keeps it — `goal.md`'s `Environment & Tools` section points
 to those locations.
@@ -239,7 +294,7 @@ objective is met. Quantitative where possible.>
 
 ### How to verify the objective
 <The concrete procedure that decides whether the objective is met.
-Prefer: a shell command + how to parse its output + pass/fail/pending rule.
+Prefer: a shell command + how to parse its output + pass/fail rule.
 Acceptable: a sequence of commands + expected observations.
 NOT acceptable: "the Runner decides whether it looks good".>
 
@@ -269,30 +324,59 @@ past experiments, domain background.>
 Notably absent: no `Budget`, no `max_iterations`, no `max_tokens`. GoaLoop
 cannot enforce these (see Philosophy §3); listing them would be misleading.
 
-#### Verification three-state semantics
+#### Verification two-state semantics, attempt status model
 
-Verification is **not** binary. The procedure returns one of three states:
+Verification itself returns one of two states — `pass` or `fail`. But the
+Runner ends its turn with one of **four** status terminators (an LLM
+judgment), and the orchestrator can additionally derive two outcomes
+deterministically when the Runner doesn't cleanly return a terminator. The
+full model:
 
-| State | Meaning | Manager response |
-|---|---|---|
-| **pass** | Objective met AND no hard constraint violated | Stop: don't schedule next wakeup, tell user DONE |
-| **fail** | Objective not met OR some constraint violated | Runner does an advance, then this attempt ends |
-| **pending** | Verification is in flight (async, e.g. long benchmark started but not yet complete) | Manager schedules a wakeup to check again, no advance |
+| Status | Source | Carries | Terminal? | Orchestrator response |
+|---|---|---|---|---|
+| **pass** | Runner | `verification` summary | Yes (success) | Exit; `status.txt` records PASS; `/goal-run` tells the user DONE |
+| **advanced** | Runner | `summary` | No | Runner did ONE unit of work and wrote `attempts/NNN.md`; orchestrator paces (or, in copilot mode, waits for approval), then starts the NEXT attempt with a FRESH session |
+| **in_progress** | Runner | `wait_secs` | No | Runner paused mid-attempt to wait out a long pollable job; orchestrator exits the process during the wait (zero tokens), sleeps, then `--resume`s the SAME session. Attempt number does not advance |
+| **blocked** | Runner | `reason` | Yes (needs human) | Runner judges it cannot reach `pass` and another advance won't help (stuck, needs a human); orchestrator exits |
+| **error** | Orchestrator | — | Yes (infra give-up) | Unrecoverable after bounded retries — a crash, a malformed/missing terminator, or a transient network error each retried up to 3× (`MAX_CONSECUTIVE_FAILURES` / `TRANSIENT_MAX_RETRIES`); then exit, clearing the session |
+| **quota** | Orchestrator | — | No | API rate/quota limit hit; orchestrator sleeps ~15 min and resumes the SAME session, INDEFINITELY (an external clock, not a give-up) |
 
-The three-state shape is what makes long verification work without
-restructuring the loop. The convention for signaling each state from a
-shell-based verification is, e.g., exit codes `0` / `1` / `2`, or a JSON
-status field — the choice is the user's, recorded in `goal.md`'s
-Verification section.
+**`blocked` vs. `error`** is the key distinction. `blocked` is the *Runner's*
+judgment (an LLM deciding the goal is unreachable without human help).
+`error` is the *orchestrator's* deterministic detection (regex on claude's
+result text for transient/quota, `try/except` for crashes, terminator-parse
+failure for malformed output) after bounded retries. The first means "the
+task needs you"; the second means "the infrastructure gave up".
 
-For long-running verification (benchmarks, training, integration tests
-measured in hours), the user's verification script must be **re-entrant**:
-on first call it kicks off the async work and records a handle (e.g. a
-`.benchmark-handle` file), returns `pending`; on subsequent calls it
-queries the handle, returns `pending` if still running, `pass`/`fail` once
-complete and parses the result. GoaLoop does not provide this pattern as a
-primitive — it is the verification author's responsibility, identical to
-the pattern any async system requires.
+The convention for signaling `pass` / `fail` from a shell-based verification
+is, e.g., exit code `0` / non-zero, or a JSON status field — the choice is
+the user's, recorded in `goal.md`'s Verification section. (That `pass`/`fail`
+result is internal to Verification; the Runner maps it to one of the four
+*terminators* above.)
+
+Long-running verification (benchmarks, training, integration tests measured
+in minutes to hours) is run **to completion within one attempt**: the Runner
+kicks off the work and either waits for it synchronously, or — for a job it
+can poll cheaply — returns `in_progress` with a `wait_secs` so the
+orchestrator can drop the process during the wait and `--resume` the same
+session afterward. Either way one attempt contains one complete Verification:
+there is no async "in flight" state that splits a run across *attempts*, and
+the verification script does not need to be re-entrant.
+
+#### Session semantics
+
+A fresh `claude -p` session is minted for every NEW attempt — this is the
+anti-cheat property (Runner N has no memory of Runner N−1). Same-session
+`--resume` happens only in two cases:
+
+- **`in_progress` pause** — a clean resume after a timed wait, prompted with
+  `Continue.`
+- **Interruption** (crash / transient error / quota / malformed terminator)
+  — resumed with a longer prompt telling the Runner to ignore the
+  interruption and not restart its work.
+
+A tiny checkpoint at `.goaloop/state.json` holds the active session id for
+crash recovery; on a give-up (`error`) the session is cleared.
 
 ### The two skills
 
@@ -315,7 +399,7 @@ Interview script (each step waits for the user's answer before proceeding):
 4. **Verification of objective.** "How will we know the objective is met?
    Give me a command I can run, or a state I can observe. If I can't grep
    the answer or compare a number, we need to refine the objective. How
-   does the procedure signal pass / fail / pending?"
+   does the procedure signal pass / fail?"
 5. **Verification of each constraint.** For each constraint from step 3:
    "How will we check this constraint?"
 6. **Environment & Tools.** "What does running these verification steps
@@ -331,37 +415,47 @@ workspace and a one-line confirmation.
 
 #### `/goal-run`
 
-A single iteration: the Manager spawns one Runner subagent and processes its
-report. The skill body instructs the Manager to perform, in order:
+Starts (or checks) the orchestrator and relays its progress. The skill body
+instructs the Manager to perform, in order:
 
-1. **Count attempts.** Find the highest `NNN` in `<workspace>/attempts/`
-   (or 0 if empty). The next Runner is attempt `NNN+1`.
-2. **Compose brief.** Build a self-contained brief for the Runner that
-   includes:
-   - The workspace path
-   - The attempt number (`NNN+1`)
-   - Recent human guidance from the conversation, **verbatim** — see the
-     Human guidance protocol below (or "none")
-   - Instruction to read `goal.md`, `memory/learnings.md`, and recent
-     `attempts/*.md` for context
-   - The expected return shape (see below)
-3. **Spawn Runner.** Invoke the `Agent` tool with `subagent_type:
-   "goal-runner"` and the brief as prompt. Wait for return.
-4. **Process report.** Parse the Runner's structured report. One of:
-   - `status: pass` → tell the user "DONE", show the verification output
-     and key metrics; do **not** call `ScheduleWakeup`; loop ends.
-   - `status: pending` → tell the user briefly that verification is in
-     flight; call `ScheduleWakeup` with a delay appropriate to the
-     verification's expected completion time (taken from the Runner's
-     report or a sensible default).
-   - `status: advanced` → tell the user briefly what the Runner did; call
-     `ScheduleWakeup` for the next attempt.
-5. **(Implicit)** Memory and per-attempt files have already been written by
-   the Runner; Manager does not touch them.
+1. **Locate the workspace** at `~/.goaloop/<name>`; require `goal.md`,
+   `memory/`, `attempts/` (else send the user to `/goal-init`).
+2. **Check liveness.** `goaloop status <name>`. If already RUNNING, skip to
+   relay; do not start a second orchestrator.
+3. **Start the orchestrator.** `goaloop run <name>` (detached background
+   process). Optional `--model` / `--interval` / `--mode`.
+4. **Relay progress.** Read `.goaloop/status.txt`,
+   `.goaloop/attempt_complete.json`, and the latest `attempts/NNN.md` to
+   summarize for the user. On PASS (orchestrator exited), tell the user DONE
+   and quote the verification summary. On `blocked`, quote the Runner's
+   reason (needs human). On `error`, surface the infra give-up. In copilot
+   mode, after each `advanced` attempt relay it and approve the next with
+   `goaloop continue <name>` on the user's go-ahead.
 
-The Manager is otherwise passive: it does not read `goal.md` (except
-optionally to quote relevant parts to the user), does not run Verification,
-does not modify the workspace, does not update `learnings.md`.
+The orchestrator, not the Manager, performs the per-attempt mechanics:
+
+1. **Count attempts.** Highest `NNN` in `attempts/` + 1 — recomputed from
+   disk each turn, so a crash that didn't write `attempts/NNN.md` retries
+   the same number.
+2. **Pick a session.** Resume the checkpointed session if the prior process
+   died mid-attempt; otherwise mint a fresh uuid (the normal case — a fresh
+   Runner with no memory of the last).
+3. **Spawn the Runner.** `claude -p <brief> --append-system-prompt
+   goal-runner.md --output-format stream-json --session-id <uuid>
+   --dangerously-skip-permissions`. The brief carries the workspace path,
+   the attempt number, the read-context + terminator instructions, and —
+   on a fresh attempt — any NEW `suggestions.md` text since the cursor.
+4. **Parse the terminator** (`{"status": pass|advanced|in_progress|blocked}`)
+   and branch: `pass`/`blocked` → exit; `advanced` (and `attempts/NNN.md`
+   exists) → pace (or, in copilot mode, wait for approval), then next
+   attempt; `in_progress` → drop the process, wait `wait_secs`, resume the
+   same session. A crash, missing/malformed terminator, transient error, or
+   quota limit is handled by the orchestrator (retry / wait / give up with
+   `error`) rather than by this branch.
+
+The Manager is otherwise passive: it does not read `goal.md` to make
+decisions (only to quote to the user), does not run Verification, does not
+modify the workspace, does not update `learnings.md`.
 
 The Runner, on its end, follows this fixed workflow:
 
@@ -373,9 +467,6 @@ The Runner, on its end, follows this fixed workflow:
    - **pass** → Write `attempts/NNN.md` recording the verification result;
      do not modify `learnings.md`; return `{ status: "pass", verification:
      ... }`.
-   - **pending** → Write `attempts/NNN.md` recording what was started (e.g.
-     handle file path, expected completion time, what's being measured);
-     do not advance; return `{ status: "pending", suggested_delay: ... }`.
    - **fail** → Continue to step 4.
 4. **Advance.** Decide what to try based on `goal.md`, `learnings.md`, and
    prior `attempts/`. Do one meaningful unit of work toward the objective:
@@ -387,63 +478,55 @@ The Runner, on its end, follows this fixed workflow:
    ~4KB).
 6. **Record attempt.** Write `attempts/NNN.md` following the structure
    below.
-7. **Return.** Return `{ status: "advanced", summary: ... }`.
+7. **Terminate.** End the turn with `{"status": "advanced", "summary": ...}`
+   (or `{"status": "pass", ...}` on the pass branch; `in_progress` with
+   `wait_secs` to pause for a long pollable job; `blocked` with a `reason` if
+   stuck and needing a human). The orchestrator parses this line.
 
-Each `/goal-run` invocation runs Verification **exactly once** (in the
-Runner). There is no separate pre-check / post-check. The "did the previous
-attempt help?" question is answered by the next attempt's Verification.
+Each attempt runs Verification **exactly once** (in the Runner). There is no
+separate pre-check / post-check. The "did the previous attempt help?"
+question is answered by the next attempt's Verification.
 
 #### Human guidance protocol
 
-The Manager–Runner split breaks the direct human↔Runner channel: the human
-talks to the Manager (their own CC session), and only the Manager can reach
-the Runner via the brief. The protocol for how human guidance flows through:
+The orchestrator runs detached: there is no live conversation channel from
+the Manager into a running Runner, and the Manager does not compose a fresh
+brief each turn (the orchestrator does, from a fixed template). There are
+**two** durable channels, by intent serving different purposes.
 
-**Primary channel: the conversation, relayed verbatim.**
+**`goal.md` (and the files it references) — permanent / structural.**
 
-When the Manager composes the brief (step 2 above), it populates the
-"Human guidance" section by:
+To steer the run durably, the human edits `goal.md` — refine the Objective,
+add or relax a Hard Constraint, or add a note in the `Initial Context`
+section ("from now on focus on the publish phase, stop optimizing
+compaction"). The next attempt's Runner reads the updated spec naturally;
+nothing needs to be relayed, and the change applies whether or not the
+Manager session is open. The Manager's job is to **propose and make the edit
+on the user's confirmation** — not to carry the guidance itself.
 
-1. Identifying the conversation window since the previous `/goal-run`
-   invocation returned (or since the session started, for the first attempt).
-2. Extracting user messages from that window.
-3. Including them in the brief **verbatim**, not summarized.
-4. Filtering out only obvious non-feedback (e.g. greetings, `how's it going?`
-   directed at the Manager itself). When in doubt, include.
+This is also why `goal.md` is mutable mid-run: it is the steering wheel, not
+just the starting configuration.
 
-The Manager is a transparent relay, not a summarizer. Summarization is
-work, and Manager is supposed to be thin; the Runner can filter noise.
+**`suggestions.md` — transient / per-attempt.**
 
-**Permanent guidance goes in `goal.md`.**
+For a one-off note that does not belong in the goal spec (e.g. something left
+while AFK — "try lock granularity next"), the human appends a line to
+`<workspace>/suggestions.md`. On each FRESH attempt the orchestrator injects
+the text added since a stored cursor (`.goaloop/suggestions.cursor`) into the
+Runner's brief as a "Human guidance (NEW)" section, then advances the cursor
+— so each note is shown to exactly one attempt and not repeated. Use
+`goal.md` for changes that should persist; use `suggestions.md` for transient
+nudges.
 
-If the human's message is a lasting course change ("from now on, focus on
-the publish phase, stop trying to optimize compaction"), it is not an
-ephemeral suggestion — it is a Goal amendment. The Manager should propose
-editing `goal.md` (typically the Initial Context section, or refining
-Objective / Constraints if applicable), then make the edit on the user's
-confirmation. Subsequent Runners read the updated `goal.md` naturally; no
-relay needed.
-
-**The Manager distinguishes messages for itself vs. for the Runner.**
+**The Manager distinguishes messages for itself vs. goal edits.**
 
 | User message | Manager's response |
 |---|---|
-| "How is it going?" | Manager answers directly by reading `attempts/`; not relayed |
-| "Try lock granularity instead next time" | Relayed to next brief |
-| "Stop the loop" | Manager omits `ScheduleWakeup`; tells user the loop has stopped |
-| "Change the target to P99 < 3s" | Manager proposes editing `goal.md`; not relayed (goal change is structural, not a per-attempt suggestion) |
-| "Hmm" / "OK" / chit-chat | Filtered |
-
-The Manager uses common sense and biases toward inclusion when ambiguous.
-
-**No `suggestions.md` file.**
-
-The conversation is already the persistent record (it lives in the CC
-session) and `goal.md` covers cross-session permanence. Introducing a
-`suggestions.md` would create a third truth source for human input that can
-conflict with both the conversation and `goal.md`. v1 deliberately omits
-it; if real usage shows users need an async file-based channel (e.g. for
-leaving notes while AFK), it can be added in a later version.
+| "How is it going?" | Answer directly by reading `.goaloop/status.txt` + latest `attempts/NNN.md` |
+| "Try lock granularity instead next time" | A transient nudge → append to `suggestions.md` (next attempt sees it once); a permanent change → propose editing `goal.md`'s Initial Context |
+| "Stop the orchestrator" | `goaloop stop <name>`; confirm it stopped |
+| "Change the target to P99 < 3s" | Propose editing `goal.md`'s Objective; edit on confirmation |
+| "Hmm" / "OK" / chit-chat | Ignore |
 
 #### `attempts/NNN.md` structure
 
@@ -454,7 +537,7 @@ sections so future Runners can scan quickly:
 # Attempt NNN
 
 ## Verification result
-- status: pass | fail | pending
+- status: pass | fail
 - key metrics: <e.g. P99=5.4s, memory_delta=+3%>
 - raw output excerpt: <a few lines of the verification's actual output>
 
@@ -464,7 +547,7 @@ sections so future Runners can scan quickly:
 ## Workspace changes
 - <file 1>: <one-line summary>
 - <file 2>: ...
-- or "no changes" (pending, or pure investigation)
+- or "no changes" (pure investigation)
 
 ## Observations
 <Key observations, anomalies, things noticed but not acted on.>
@@ -475,95 +558,126 @@ sections so future Runners can scan quickly:
 
 ### How to run
 
-v0.1 has a single mode: the user invokes `/goal-run`. It is
-self-driving — there is no outer `/loop` wrapper. On `advanced` or
-`pending` the Manager schedules its own next invocation with
-`ScheduleWakeup(prompt: "/goal-run")`; on `pass` it omits the wakeup
-so the loop ends. The user types `/goal-run` once and it self-paces
-until the Runner reports `pass` or the user stops it.
+The user runs `goaloop run <name>` (directly or via `/goal-run`), which
+launches the detached orchestrator. It runs each attempt as a fresh
+`claude -p` Runner and exits on `pass`. Because it is its own process, it
+keeps iterating regardless of whether the Claude Code session that launched
+it stays open.
 
-There is intentionally no separate "copilot" / "one-shot" mode in
-v0.1. The Manager always calls `ScheduleWakeup` on `advanced` or
-`pending` and only omits it on `pass`. A bare `/goal-run` therefore
-behaves the same whether the user wants one attempt or many: it keeps
-re-invoking itself until the goal is met. The honest design choice is
-to commit to the auto-paced shape and let the human pace by other
-means (described below) rather than fake a copilot mode the
-implementation cannot guarantee.
+There are two modes, selected by `--mode` or `config.yaml`:
 
-The loop terminates when:
+- **`auto`** (default) — after each `advanced` attempt the orchestrator paces
+  itself by `interval` (default 30s) and starts the next attempt.
+- **`copilot`** — after each `advanced` attempt the orchestrator PAUSES and
+  waits for human approval before the next attempt instead of pacing.
+  Approve with `goaloop continue <name>` (which writes
+  `.goaloop/continue.json`). Only `advanced` pauses: `pass`/`blocked`/`error`
+  are terminal (no wait), and `in_progress` is an intra-attempt resume (no
+  wait).
 
-- The Runner reports `pass`, the Manager does not schedule the next
-  wakeup, and the loop ends naturally.
-- The user presses `Esc` / closes the session.
-- The 7-day auto-expiry on scheduled tasks fires.
+#### Configuration (`config.yaml`)
+
+Optional, per-workspace, at `<workspace>/config.yaml`. Flat keys:
+
+| Key | Meaning | Default |
+|---|---|---|
+| `model` | model id passed to `claude -p` | (CLI default) |
+| `interval` | seconds between successful attempts (auto mode) | `30` |
+| `mode` | `auto` or `copilot` | `auto` |
+
+Precedence: CLI flags (`--model` / `--interval` / `--mode`) override
+`config.yaml`, which overrides the built-in defaults.
+
+The orchestrator terminates when:
+
+- The Runner reports `pass` and the orchestrator process exits naturally.
+- The Runner reports `blocked` — it judges the goal unreachable without a
+  human; the orchestrator exits.
+- The orchestrator gives up with `error` after bounded retries of malformed /
+  failing attempts (a broken-Runner guard, not a goal condition).
+- The human runs `goaloop stop <name>` (SIGTERM).
+
+(A `quota` limit is not a termination — the orchestrator sleeps and resumes
+indefinitely.)
 
 Human pacing during a run is achieved by:
 
-- **Reading the relayed report** after each attempt. The Manager
-  summarizes the Runner's return to the user.
-- **Dropping verbatim suggestions** in the conversation, which the
-  Manager relays into the next Runner's brief.
-- **Editing `goal.md`** mid-run to amend the target or constraints.
-  The next Runner picks up the new spec.
-- **Pressing Esc** to stop earlier than `pass`.
+- **Reading status** via `/goal-run` (or `goaloop status`, or
+  `tail -f .goaloop/orchestrator.log`) — the orchestrator writes `status.txt` and
+  `attempt_complete.json` each attempt.
+- **Editing `goal.md`** (permanent) or **appending to `suggestions.md`**
+  (transient, per-attempt) to steer — the next attempt's Runner picks it up
+  (see Human guidance protocol).
+- **`goaloop continue`** to release the next attempt in copilot mode.
+- **`goaloop stop`** to halt earlier than `pass`.
 
-> **Important.** The loop is driven by the Manager's own
-> `ScheduleWakeup(prompt: "/goal-run")` chain — one wakeup scheduled
-> per turn, ended by simply not scheduling the next one once the
-> Runner reports `pass`. Do not wrap `/goal-run` in `/loop`; the skill
-> already self-schedules, and an interval-mode `/loop` could not be
-> ended by the skill anyway.
+> **Important.** The orchestrator drives itself — it is a `while` loop in
+> `goaloop run`, not a `ScheduleWakeup` chain and not wrapped in `/loop`.
+> `/goal-run` only starts/checks it; the Manager does not schedule attempts.
 
 ### No loop nesting
 
-GoaLoop relies on a single self-scheduling `/goal-run` chain. The
-Manager skill body MUST NOT invoke `/loop` at all, and the Runner
-subagent MUST NOT call `ScheduleWakeup` or `/loop`. Only the Manager
-schedules the next attempt, via one `ScheduleWakeup(prompt:
-"/goal-run")` per turn. Sub-task polling and long-running verification
-are handled by that same wakeup chain and the Verification three-state
-semantics described above.
+GoaLoop uses exactly one loop: the `goaloop run` orchestrator's attempt loop.
+The Manager skill body MUST NOT invoke `/loop` or `ScheduleWakeup`, and the
+Runner (a `claude -p` session) MUST NOT either — if a Runner emitted
+`ScheduleWakeup` it would have no effect on the orchestrator, which paces
+attempts itself. Long-running verification is handled within one attempt
+(the Runner waits, or returns `in_progress` for the orchestrator to time the
+wait), not by any wakeup mechanism — see the attempt status model above.
 
 ### Termination
 
-Two real paths:
+Four terminal states:
 
-1. **Goal met.** Runner returns `pass`; Manager does not call
-   `ScheduleWakeup`; loop ends naturally. Workspace contains the converged
-   state, full audit trail in `attempts/`.
-2. **Human stops.** User presses `Esc`, closes the session, or lets the
-   scheduled wakeup chain expire.
+1. **pass — goal met.** Runner returns `pass`; the orchestrator exits.
+   Workspace contains the converged state, full audit trail in `attempts/`.
+2. **blocked — needs human.** Runner judges it cannot reach `pass` and
+   another advance won't help; it returns `blocked` with a `reason` and the
+   orchestrator exits. (Runner judgment — an LLM decision.)
+3. **error — infra give-up.** The orchestrator gives up after bounded retries
+   of *malformed* / failing attempts (crashes, missing terminators, transient
+   errors), so a broken Runner doesn't spin forever. (Orchestrator's
+   deterministic detection.)
+4. **Human stops.** `goaloop stop <name>` sends SIGTERM; the orchestrator
+   exits.
+
+A `quota` limit is NOT terminal — the orchestrator sleeps (~15 min) and
+resumes the same session indefinitely, since it's an external clock.
 
 There is no "budget exhausted", no "max attempts", no "convergence detected"
-termination from the framework. If progress stalls, the human notices (by
-reading `attempts/` or asking the Manager) and intervenes — there is no
-daemon trying to intervene on their behalf.
+goal termination. If progress stalls (the Runner keeps reporting `advanced`
+without converging), the human notices — by reading `attempts/` or asking
+the Manager — and intervenes.
 
 ## Explicitly Excluded
 
 The following were considered and deliberately not built. Each appears here
 with the reason so future contributors don't reintroduce them by reflex.
 
+> **Implemented after v0.1 (now included).** Two features once listed here as
+> excluded have since been built: `suggestions.md` (a transient per-attempt
+> human → agent channel, NEW-since-cursor injection — see Human guidance
+> protocol) and copilot mode (the `--mode copilot` human-review pause,
+> released with `goaloop continue` — see How to run). They are documented
+> above and are no longer exclusions.
+
 | Feature | Why excluded |
 |---|---|
-| Independent referee evaluator (separate from Runner) | Inter-attempt judging — Runner N (fresh subagent) judging the state Runner N−1 left behind — provides the same arm's-length-referee property at zero infrastructure cost; see Philosophy §2 |
+| Independent referee evaluator (separate from Runner) | Inter-attempt judging — Runner N (fresh `claude -p` session) judging the state Runner N−1 left behind — provides the same arm's-length-referee property at zero infrastructure cost; see Philosophy §2 |
 | Multiple agent roles beyond Manager–Runner (planner / critic / judge) | Manager + Runner already covers orchestration vs. execution; further role splits add coordination overhead and rarely pay off |
-| `claude -p` subprocess Runner | API billing defeats the subscription economics that motivate the rewrite; subagent provides the same fresh-context property |
+| Subagent Runner (via the `Agent` tool) | The earlier design's runtime, dropped in v0.1: it required the Manager session to stay open and self-schedule, and tied each attempt to the Manager's context lifetime. A detached `claude -p` orchestrator is closer to the Ralph-loop ideal and survives the session closing — for the same subscription cost. See the runtime-pivot note under Status. |
 | `verdict.log` append-only history | `attempts/NNN.md` already records each verification result; one less moving piece |
-| Hooks (Stop / SessionStart / PreToolUse / PostToolUse) | Skills + subagent are sufficient; hooks would have been infrastructure for an independent evaluator we are not building |
+| Hooks (Stop / SessionStart / PreToolUse / PostToolUse) | The orchestrator + skills are sufficient; hooks would have been infrastructure for an independent evaluator we are not building |
 | Pareto multi-objective | "Main objective + hard constraints" covers the realistic cases without ambiguity |
 | Budget enforcement (`max_tokens`, `max_iterations`, etc.) | GoaLoop has no mechanism to enforce these; promising them would be a lie |
 | Workspace isolation primitives (`snapshot`, `rollback`) | Trial-and-rollback inside one Runner attempt is the Runner's responsibility (`git stash`, copy directories, whatever fits); the framework only sees the end of each attempt |
 | Cross-workspace sharing (learnings / skills / templates) | v1 keeps workspaces fully independent; cross-workspace patterns can be added when concrete demand appears |
 | External resource locks (shared clusters, GPUs) | Outside GoaLoop's scope; if needed, the user's verification scripts coordinate via whatever mechanism fits their environment |
-| Custom monitor TUI | Claude Code is the UI; conversation history shows what's happening |
-| `events.jsonl` event stream | Same reason as monitor TUI |
-| `suggestions.md` (human → agent async channel) | User speaks to the Manager in the conversation; Manager passes recent feedback into the Runner's brief |
-| `questions.md` (agent → human async channel) | Manager talks to the human directly in the conversation |
-| `DONE` marker file | Not needed — Manager omitting `ScheduleWakeup` ends the loop; "DONE" in the Manager's message to the user is the human-visible signal |
-| Auto-pause / human-review pause skill | The self-scheduling chain already pauses between attempts — each wakeup is a fresh turn; the user reads the Manager's relay of the Runner's report and decides |
-| Nested `/loop` invocations | GoaLoop uses no `/loop` at all; it relies only on a single self-scheduling `/goal-run` chain via `ScheduleWakeup` |
+| Custom monitor TUI | `.goaloop/orchestrator.log` (`tail -f`) plus `goaloop status` / `/goal-run` cover live monitoring; a bespoke TUI isn't worth the maintenance |
+| `events.jsonl` event stream | `orchestrator.log` already captures per-attempt Runner messages, tool calls, and results; one less format |
+| `questions.md` (agent → human async channel) | The Runner records open questions in `attempts/NNN.md` / `learnings.md`; the human reads them via `/goal-run` |
+| `DONE` marker file | Not needed — the orchestrator exiting on `pass` and `status.txt` recording PASS is the signal; `/goal-run` relays "DONE" to the user |
+| Nested `/loop` invocations | GoaLoop's single loop is the `goaloop run` orchestrator; `/goal-run` neither wraps `/loop` nor schedules wakeups |
 | Manager-side verification or memory curation | Runner is the sole writer to `learnings.md` and `attempts/`; keeps a single authoritative writer per file |
 | Pre-check / post-check duplication | One Verification per attempt; the next attempt's Verification serves as the prior attempt's post-mortem |
 
@@ -581,7 +695,7 @@ benchmark, without increasing memory by more than 10%":
 - Objective: quantitative threshold on P99.
 - Hard constraint: memory ceiling.
 - Verification (objective): SSH to bench cluster, run `./scripts/measure_p99.sh`,
-  parse JSON, compare. Returns `pending` while benchmark is running.
+  parse JSON, compare. The script blocks until the benchmark completes.
 - Verification (constraint): run `./scripts/memory_delta.sh baseline current`.
 - Environment & Tools: SSH config, scripts location, database source path,
   GitHub CLI for PRs, `jq`.
@@ -589,10 +703,9 @@ benchmark, without increasing memory by more than 10%":
 Test: can a Runner in `/goal-run` plausibly do a benchmark-analyze-fix
 attempt within this spec, without GoaLoop needing domain-specific features?
 The "deploy" step lives inside the verification scripts (the human's
-responsibility); the Runner's work is investigation + code change. The
-benchmark's hours-long run becomes a `pending` loop of attempts that mostly
-just check status, then a single `fail` attempt that does the next code
-change.
+responsibility); the Runner's work is investigation + code change. Each
+attempt runs the benchmark to completion inside the Runner, then either
+reports `pass` or does the next code change and reports `advanced`.
 
 ### Scenario B: Writing iteration (autoresearch-style)
 
@@ -610,28 +723,30 @@ judge rates it ≥ 8/10 on a clarity rubric":
 
 Test: does the framework accommodate LLM-as-judge verification without
 needing any framework support for "judge evaluators"? The answer is yes
-— the Runner does the judging itself, in its own subagent context. The
-arm's-length property comes from Runner N (fresh subagent) judging the
-draft that Runner N−1 produced; no nested subagent or separate evaluator
-subsystem is required. This is the same mechanism that gives Scenario A
-its anti-cheat property, applied to a qualitative criterion.
+— the Runner does the judging itself, in its own `claude -p` context. The
+arm's-length property comes from Runner N (a fresh `claude -p` session)
+judging the draft that Runner N−1 produced; no nested agent or separate
+evaluator subsystem is required. This is the same mechanism that gives
+Scenario A its anti-cheat property, applied to a qualitative criterion.
 
-If both scenarios pass the acid test, GoaLoop is ready to implement.
+Both scenarios fall out naturally on the implemented runtime — no
+domain-specific features and no awkward workarounds.
 
 ## Open questions deferred to implementation
 
-Small decisions not load-bearing on the architecture, to settle while writing
-the skills and the Runner agent definition:
+Small decisions not load-bearing on the architecture, settled while writing
+the skills and the Runner system prompt (recorded here for context):
 
 - Exact wording of the `/goal-init` interview prompts.
 - Exact wording of the `/goal-run` Manager skill body.
-- Exact system prompt for the `goal-runner` subagent type.
+- Exact system prompt for the Runner (`agents/goal-runner.md`, used as
+  `--append-system-prompt`).
 - What guidance to give the Runner about when `learnings.md` entries should
   be added vs. merged vs. pruned.
 - How many recent `attempts/*.md` files the Runner should read by default
   (last N, or all under a size budget).
-- Whether the Manager should fall back to reading `attempts/` if the
-  Runner's report parses oddly (defensive vs. trust the contract).
+- How robustly the orchestrator should parse the Runner's terminator (v0.1:
+  last standalone JSON line, with a flat-`{...status...}` regex fallback).
 
 These will be settled by writing the skills and observing what reads
 naturally; they do not require architectural decisions.

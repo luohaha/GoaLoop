@@ -57,9 +57,10 @@ Ask these in order, one at a time:
 4. **Verification of objective.** "How will we know the objective is
    met? Give me a concrete check — a command to run plus how to
    interpret its output. If the check is long-running (benchmark,
-   training, integration test taking hours), tell me how it signals
-   **pending** vs done — typically a re-entrant script that returns
-   exit code 2 while still running and exit 0/1 when complete."
+   training, integration test taking minutes to hours), that's fine —
+   the Runner waits for it to finish within one attempt. Just make
+   sure the command blocks until the result is ready and then signals
+   pass vs fail (e.g. exit 0 / non-zero)."
 
 5. **Verification of each constraint.** For each constraint from step
    3: "How will we check this constraint?"
@@ -95,7 +96,7 @@ section structure:
 
 ### How to verify the objective
 <step 4 — be specific about the command, the parsing, and the
-pass/fail/pending convention>
+pass/fail convention>
 
 ### How to verify each constraint
 - <constraint 1>: <check from step 5>
@@ -122,9 +123,17 @@ mkdir -p <workspace>/memory <workspace>/attempts
 After writing, tell the user:
 - The workspace path
 - That `goal.md` was written (and show its content for review)
-- That they can now run `/goal-run`, which iterates automatically —
-  it self-schedules each next attempt until the goal is met (press
-  Esc to stop early); no `/loop` wrapper needed
+- That they can now run `/goal-run` (or `goaloop run <name>` directly),
+  which starts a background orchestrator: each attempt is a fresh
+  `claude -p` Runner that verifies and advances until the goal is met.
+  The orchestrator runs detached from this session and stops itself on
+  pass; stop it early with `goaloop stop <name>`. To change direction
+  mid-run, edit `goal.md` — the next attempt picks it up.
+- (Optional, no action needed at init) the workspace may also hold a
+  `config.yaml` (flat keys `model` / `interval` / `mode: auto|copilot`)
+  to set run defaults, and a `suggestions.md` where they can drop async
+  per-attempt notes mid-run (each note is shown to one fresh attempt);
+  `goal.md` remains the place for permanent changes.
 
 Encourage them to read and tweak `goal.md` before kicking off — it's
 the load-bearing artifact of the whole framework.

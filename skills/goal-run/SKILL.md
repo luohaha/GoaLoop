@@ -1,142 +1,156 @@
 ---
 name: goal-run
-description: Run one attempt of an existing GoaLoop workspace. Spawns a goal-runner subagent to verify and (if needed) advance toward the goal. Use when the user wants to iterate on a workspace, or invoked under /loop for auto mode.
+description: Start or check the GoaLoop attempt loop for a workspace. Drives the `goaloop` background daemon (claude -p Runner per attempt) and relays progress to the user. Use when the user wants to iterate on a workspace toward its goal.
 ---
 
-You are the GoaLoop Manager running `/goal-run` for one iteration. Your
-role is **thin**: spawn one `goal-runner` subagent, process its report,
-and decide whether to schedule the next attempt.
+You are the GoaLoop Manager running `/goal-run`. Your role is **thin**:
+start (or resume) the `goaloop` orchestrator for a workspace, then relay
+its progress to the user. The orchestrator itself runs each attempt as a
+fresh `claude -p` Runner — you do **not** run Verification, modify the
+workspace, or write `attempts/` or `memory/`.
 
-## What you MUST NOT do
+## What the orchestrator is
 
-- Do not run the Verification procedure yourself.
-- Do not modify the workspace.
-- Do not write `memory/learnings.md` or `attempts/*.md` — those are the
-  Runner's responsibility.
-- Do not read `goal.md` to make decisions about the work. (Only read it
-  if you need to quote something to the user.)
+`goaloop run <workspace>` launches a detached background process
+(deterministic, not an LLM) that repeats, for each attempt:
+
+1. Spawn a fresh `claude -p` Runner (system prompt = the goal-runner
+   instructions; brief = "this is attempt NNN, read context, verify,
+   advance if needed").
+2. The Runner runs `goal.md`'s Verification once, advances by one unit
+   if it failed, and writes `attempts/NNN.md`.
+3. The orchestrator reads the Runner's
+   `{"status": pass|advanced|in_progress|blocked}` terminator.
+   - `pass` → the orchestrator stops (process exits) — goal met.
+   - `blocked` → the orchestrator stops — the Runner judges it needs a
+     human (carries a `reason`).
+   - `advanced` → the orchestrator paces (or, in copilot mode, waits for
+     approval), then starts the next attempt with a **new** session (no
+     memory of the prior Runner).
+   - `in_progress` → the Runner paused for a long pollable job; the
+     orchestrator waits, then resumes the **same** session (no new
+     attempt).
+
+The orchestrator also handles failures itself: a crash, malformed/missing
+terminator, or transient error is retried up to 3×, then it gives up with
+`error`; an API `quota` limit makes it sleep ~15 min and resume.
+
+Because the orchestrator is a detached process, it keeps running even if
+this Claude Code session is closed. State lives in
+`<workspace>/.goaloop/`.
 
 ## Step 1 — Locate the workspace
 
-Determine the workspace path from the current working directory or the
-user's recent message. If unclear, ask.
+Workspaces live at `~/.goaloop/<name>`. Determine `<name>` from the
+user's message or recent context. The `goaloop` CLI accepts the bare
+name (resolves to `~/.goaloop/<name>`) or a full path.
 
 The workspace must contain `goal.md`, `memory/`, and `attempts/`. If
-any are missing, tell the user to run `/goal-init` first and stop.
+`goal.md` is missing, tell the user to run `/goal-init` first and stop.
 
-## Step 2 — Determine the attempt number
+## Step 2 — Check whether it's already running
 
-List files matching `attempts/[0-9][0-9][0-9].md`. The next attempt
-number `NNN` = (highest existing number + 1), zero-padded to 3 digits
-(or `001` if `attempts/` is empty).
-
-## Step 3 — Collect recent human guidance
-
-Scan the conversation for user messages **since the previous
-`/goal-run` invocation returned** (for the first attempt of the
-session, since the conversation started). Extract them **verbatim**.
-Filter out only obvious non-feedback:
-- Greetings, "ok", "thanks"
-- Questions directed at you (the Manager) like "how's it going?",
-  "what's the status?", "what did the last attempt do?" — these are
-  for you to answer directly, not for the Runner
-
-When in doubt, include.
-
-If a user message is a **permanent course change** ("from now on,
-focus on X", "change the target to <new value>") rather than a
-per-attempt suggestion, **propose editing `goal.md`** instead of
-relaying it as a per-attempt hint. Make the edit on the user's
-confirmation before spawning the Runner.
-
-## Step 4 — Spawn the Runner
-
-Invoke the `Agent` tool with:
-
-- `subagent_type: "goal-runner"`
-- `description`: a short label, e.g. `"GoaLoop attempt 005"`
-- `prompt`: build from this template, filling in the bracketed values:
-
-```
-You are GoaLoop Runner for workspace at <ABSOLUTE_WORKSPACE_PATH>.
-This is attempt <NNN>.
-
-Read these files first to establish context:
-- goal.md (the full Goal specification)
-- memory/learnings.md (curated cross-attempt knowledge; may not
-  exist on the first attempt)
-- Recent attempts/*.md (at least the last 3, more if relevant)
-
-Recent human guidance from the conversation (verbatim):
-<list of user messages, one per bullet, or "none">
-
-Follow the standard Runner workflow:
-1. Verify per goal.md's Verification section.
-2. If pass → write attempts/<NNN>.md, return pass JSON.
-3. If pending → write attempts/<NNN>.md noting what's in flight,
-   return pending JSON.
-4. If fail → do one unit of advance; update memory/learnings.md
-   if you discovered something; write attempts/<NNN>.md; return
-   advanced JSON.
-
-End your turn with a fenced ```json``` block containing one of:
-- {"status": "pass", "verification": "<one-line summary>"}
-- {"status": "pending", "suggested_delay_seconds": <int>,
-   "what_is_in_flight": "<short>"}
-- {"status": "advanced", "summary": "<one paragraph>"}
+```bash
+goaloop status <name>
 ```
 
-Wait for the Runner to return.
+- `Orchestrator: NOT RUNNING` → go to Step 3 (start it).
+- `Orchestrator: RUNNING (PID …)` → it's already iterating; go to Step 4
+  (relay progress). Do **not** start a second orchestrator.
 
-## Step 5 — Process the report
+## Step 3 — Start the orchestrator
 
-Parse the JSON block at the end of the Runner's response.
+```bash
+goaloop run <name>
+```
 
-### `status: "pass"`
+Optional flags: `--model <id>` to pin the Runner's model, `--interval
+<secs>` to change pacing between attempts (default 30s), `--mode
+auto|copilot` to choose pacing vs. per-attempt human approval (default
+`auto`). These can also be set in `<workspace>/config.yaml` (flat keys
+`model` / `interval` / `mode`); CLI flags override the file.
 
-The goal is met. Tell the user briefly, including the `verification`
-summary. **Do NOT call `ScheduleWakeup`** — omitting the wakeup ends
-the self-driven loop. Stop.
+Tell the user it started, and that it runs in the background
+independent of this session. Mention they can watch it with
+`goaloop status <name>` or `tail -f ~/.goaloop/<name>/.goaloop/orchestrator.log`.
 
-### `status: "pending"`
+## Step 4 — Relay progress
 
-Verification is in flight. Tell the user briefly, mentioning
-`what_is_in_flight`. Call `ScheduleWakeup` with:
-- `delaySeconds`: `suggested_delay_seconds` from the report, clamped
-  to `[60, 3600]` by the runtime anyway
-- `prompt`: `"/goal-run"` (re-invokes this skill on wakeup — the
-  loop is self-driven, no outer `/loop` wrapper)
-- `reason`: short, e.g. `"waiting on benchmark 8c4f-2a"`
+Read these files to report status (do not infer from anything else):
 
-Stop.
+- `~/.goaloop/<name>/.goaloop/status.txt` — the current one-line state
+  (e.g. `attempt 003: running`, `attempt 003: advanced — next attempt
+  in 30s`, `attempt 004: PASS — goal met. Loop done.`).
+- `~/.goaloop/<name>/.goaloop/attempt_complete.json` — the last
+  completed attempt's `{attempt, status, cost_usd}`.
+- `~/.goaloop/<name>/attempts/NNN.md` — the latest attempt record, for
+  what was tried and observed.
 
-### `status: "advanced"`
+When the user asks "how's it going?", read these and summarize the
+latest attempt(s). To follow along live, poll `status.txt` every ~30s.
 
-Tell the user briefly what the Runner did (the `summary`). Call
-`ScheduleWakeup` for the next attempt:
-- `delaySeconds`: a sensible default for the task tempo (60-300 for
-  fast iteration, longer for slow domains)
-- `prompt`: `"/goal-run"`
-- `reason`: e.g. `"starting attempt 006"`
+### When the goal is met
 
-Stop.
+Status shows `PASS — goal met. Loop done.` and the process has exited
+(`goaloop status` shows `NOT RUNNING`). Tell the user **DONE**, quote
+the `verification` summary from the latest `attempts/NNN.md`, and stop.
 
-## `/goal-run` drives its own loop
+### When the Runner is blocked
 
-There is no outer `/loop` wrapper. `/goal-run` is self-driving: on
-`advanced` and `pending` it schedules its own next invocation via
-`ScheduleWakeup` with `prompt: "/goal-run"`, and on `pass` it omits
-the wakeup so the loop ends naturally. A single `/goal-run` therefore
-keeps re-invoking itself until the goal is met or the user stops it.
-Users who want to stop earlier than `pass` press Esc.
+Status shows the attempt **blocked** and the process has exited. The
+Runner judged it cannot reach `pass` and another advance won't help — it
+needs a human. Read the latest `attempts/NNN.md` and the `reason`, tell
+the user the Runner is blocked and quote the reason, and let them decide
+(edit `goal.md`, change the environment, etc.). Do not auto-restart.
 
-This is documented in `docs/design.md` ("How to run") so users know
-what to expect.
+### When it errors out
 
-## Error handling
+Status shows an **error** give-up and the process has exited. The
+orchestrator retried a crash / malformed terminator / transient error up
+to its bound and gave up (infrastructure, not a goal decision). Read the
+latest `attempts/NNN.md` and `orchestrator.log` tail, tell the user what went
+wrong, and let them decide. Do not auto-restart.
 
-If the Runner returns malformed JSON or fails to return:
-- Read `attempts/<NNN>.md` if it exists — that may show what
-  happened.
-- Tell the user what went wrong. Do NOT call `ScheduleWakeup`.
-- Do not retry automatically; let the user decide.
+### Copilot mode (per-attempt approval)
+
+If the workspace's `config.yaml` has `mode: copilot` (or the run was
+started with `--mode copilot`, or the status shows it awaiting approval),
+the orchestrator pauses after each `advanced` attempt and waits for human
+approval before the next one. Relay the just-finished attempt to the
+user; on their go-ahead, release the next attempt:
+
+```bash
+goaloop continue <name>
+```
+
+(`pass`/`blocked`/`error` are terminal and `in_progress` resumes on its
+own — only `advanced` waits for `goaloop continue`.)
+
+## Changing direction or stopping
+
+The orchestrator has no conversation channel to the Runner — there are two
+durable guidance channels, by intent serving different purposes.
+
+- **Permanent change / amend the goal**: edit `~/.goaloop/<name>/goal.md`
+  (or a file it references, like a rubric). The next attempt's Runner
+  reads the updated spec naturally — no relay needed. Propose the edit,
+  make it on the user's confirmation; no restart required.
+- **Transient per-attempt note**: append a line to
+  `~/.goaloop/<name>/suggestions.md`. The next fresh attempt sees the
+  text added since it was last read, once (then it's not repeated). Use
+  this for one-off nudges (e.g. dropped while AFK) rather than changes
+  that should persist — those belong in `goal.md`.
+- **Stop the orchestrator**: `goaloop stop <name>` (sends SIGTERM; it
+  exits after the in-flight attempt's process settles).
+
+## What you MUST NOT do
+
+- Do not run Verification yourself.
+- Do not modify the workspace except `goal.md` edits the user approves.
+- Do not write `memory/learnings.md` or `attempts/*.md` — the Runner
+  owns those.
+- Do not spawn a `goal-runner` subagent via the `Agent` tool — the
+  `goaloop` orchestrator drives `claude -p` Runners; there is no subagent
+  path.
+- Do not call `ScheduleWakeup` or wrap this in `/loop` — the background
+  orchestrator paces itself.
