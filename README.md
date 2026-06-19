@@ -1,4 +1,8 @@
-# GoaLoop
+<p align="center">
+  <img src="docs/assets/logo.png" alt="GoaLoop" width="160">
+</p>
+
+<h1 align="center">GoaLoop</h1>
 
 > A goal-driven multi-attempt iteration framework — a Ralph loop over
 > `claude -p`, with just enough structure to be safe.
@@ -40,24 +44,44 @@ rationale.
 
 ## Architecture in one picture
 
-```
-You ── /goal-init  → interviews you, writes goal.md
-   ├── /goal-flash → one-shot: infers goal.md from a sentence, then runs
-   └── /goal-run   → starts the orchestrator, then relays its status
+```mermaid
+flowchart TD
+    U["You (Manager)<br/>Claude Code session"] -->|"/goal-init · /goal-flash"| G["goal.md<br/>objective + constraints + verification"]
+    U -->|"/goal-run · goaloop run"| O["Orchestrator<br/>(detached Python loop, not an LLM)"]
 
-      goaloop run <name>   (detached background process; not an LLM)
-        │
-        └── while not done:               ← paces itself (--interval)
-              spawn a fresh `claude -p` Runner for attempt NNN
-                │  reads goal.md, learnings.md, recent attempts/
-                │  runs the Verification procedure (once)
-                │  if fail → advances the workspace by one unit
-                │  writes attempts/NNN.md; maybe updates learnings.md
-                │  ends with {"status": pass | advanced | in_progress | blocked}
-                ▼
-       pass → exit (done)   blocked → exit (needs human)
-       advanced → next attempt, new session (copilot: wait for approval)
-       in_progress → wait wait_secs, resume same session
+    O -->|"spawn fresh process per attempt"| R["claude -p Runner (attempt NNN)<br/>no memory of prior attempts"]
+    R -->|"reads"| W[("Workspace on disk<br/>goal.md · memory/ · attempts/")]
+    R -->|"runs Verification once"| V{"pass?"}
+
+    V -->|"pass"| DONE(["exit — goal met ✓"])
+    V -->|"fail → advance one unit"| ADV["write attempts/NNN.md<br/>maybe update learnings.md"]
+    ADV -->|"loop: new session"| O
+    V -->|"blocked"| HUMAN(["exit — needs a human"])
+    V -->|"long job"| WAIT["in_progress / ScheduleWakeup<br/>pause, then resume same session"]
+    WAIT --> R
+
+    W -.->|"edit mid-run to steer"| U
+```
+
+### The attempt lifecycle
+
+Each attempt is a fresh `claude -p` Runner. Verification is two-state
+(`pass` / `fail`); the Runner ends with one of four terminators.
+
+```mermaid
+stateDiagram-v2
+    [*] --> LoadContext: fresh claude -p Runner
+    LoadContext --> Verify: read goal.md, learnings, recent attempts
+    Verify --> Pass: objective met & no constraint violated
+    Verify --> Advance: fail (and not blocked)
+    Verify --> Blocked: unreachable without a human
+    Verify --> InProgress: long pollable job running
+
+    Advance --> Record: do ONE unit of work
+    Record --> [*]: status=advanced → next attempt (new session)
+    Pass --> [*]: status=pass → orchestrator exits
+    Blocked --> [*]: status=blocked → orchestrator exits
+    InProgress --> [*]: pause, resume SAME session later
 ```
 
 ## Install
