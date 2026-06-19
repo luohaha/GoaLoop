@@ -8,8 +8,7 @@ so name your exports to match (or update the README links if you rename).
 | `logo.png` | Primary icon mark, used in the README header. Square, ideally transparent background. | §1 |
 | `logo-mark.png` | Icon mark, transparent / monochrome variant for inline use (optional). | §1 variants |
 | `logo-wordmark.png` | Horizontal "GoaLoop" lockup (optional). | §2 |
-| `hero-architecture.png` | Decorative architecture illustration (optional — the accurate diagram is Mermaid in the README). | §3 |
-| `hero-lifecycle.png` | Decorative lifecycle illustration (optional). | §4 |
+| `architecture.png` | The README's "Architecture in one picture" — three layers (Manager → Orchestrator → Runner) + loop + verification. | §3 |
 
 Tips:
 - Prefer transparent-background PNGs for the logo so it works in light and

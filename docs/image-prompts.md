@@ -94,57 +94,55 @@ feel. Wide aspect ratio about 4:1. Spelling must read exactly "GoaLoop".
 
 ---
 
-## 3. Architecture — concept illustration
+## 3. Architecture diagram — three layers + loop (README)
 
-⚠️ Diagram-with-labels territory — nano banana will likely garble the
-text. Best used as a *decorative hero image* with minimal/no words; for an
-accurate labeled diagram use the Mermaid version in §6.
+This is the README's "Architecture in one picture" → save as
+`docs/assets/architecture.png`. It must read clearly as **three layers**
+top-to-bottom — Manager → Orchestrator → Runner — with a **loop** showing
+repeated attempts and a **verification gate** that decides pass vs. loop-again.
+
+⚠️ It has a few short text labels; nano banana may misspell them. Generate
+several and pick a clean one, **or** generate it text-free (icons only) and
+add the four labels — "Manager", "Orchestrator", "Runner", "verify" — in
+real type afterward.
 
 ```
-An isometric flat-vector illustration of a software pipeline, GoaLoop's
-"goal-driven attempt loop". Three stacked layers connected by a glowing
-teal loop arrow that cycles back on itself:
-1) a person at a terminal (the human Manager),
-2) a small gear / daemon box (the orchestrator, deterministic),
-3) a series of identical fresh worker chips spawned one after another
-   (each a disposable "claude -p" Runner), feeding into
-4) a stack of document/file cards on the right (the workspace on disk:
-   goal, memory, attempts), with a bullseye target glowing above the stack.
+A clean flat-vector architecture diagram, wide 16:9, on a deep midnight
+navy background (#0E1726). Three clearly separated horizontal layers
+stacked top to bottom, connected by arrows:
 
-A teal loop arrow flows worker -> files -> back to a new worker, conveying
-"fresh attempt each time". When the loop reaches the bullseye, a green
-check mark lights up.
+Top layer — "Manager": a person sitting at a laptop / terminal, the human
+who kicks things off. A downward arrow labeled "start" goes to the middle
+layer.
 
-Style: clean isometric flat design, midnight navy background (#0E1726),
-electric teal (#2DD4BF) flow lines, warm amber (#F5A524) target, signal
-green (#22C55E) success accent, off-white (#F7F8FA) surfaces. Minimal,
-uncluttered, no readable text labels (use shapes and icons, not words).
-Wide 16:9 banner composition.
+Middle layer — "Orchestrator": a single hexagonal gear / control-hub icon,
+clearly a deterministic machine, not an AI. Label it "Orchestrator (loop,
+not an AI)". A downward arrow labeled "spawn" goes to the bottom layer.
+
+Bottom layer — "Runner": an AI worker chip / friendly robot head, drawn as
+three slightly overlapping copies fanned out left-to-right (attempt 1, 2,
+3…) to show that a fresh Runner is spawned each attempt.
+
+To the right of the Runner sits a verification gate: a bullseye target with
+two outgoing arrows — a green check-mark arrow labeled "pass" leading to a
+small trophy / flag (goal met, done), and an amber arrow labeled "fail"
+that curves back UP to the Orchestrator, forming a big loop that conveys
+"verify, fail, spawn the next Runner, repeat".
+
+Style: modern geometric flat design, even-weight clean line work, minimal
+and uncluttered, generous spacing. Colors: electric teal (#2DD4BF) for the
+arrows and loop, warm amber (#F5A524) for the target and the fail path,
+signal green (#22C55E) for the pass check mark, off-white (#F7F8FA) for the
+layer surfaces and icons. Short crisp text labels only: "Manager",
+"Orchestrator", "Runner", "verify", "pass", "fail". Wide banner composition.
 ```
+
+**Variant to try:** add "no text, icons only, label-free" to get a clean
+text-free version you can annotate yourself.
 
 ---
 
-## 4. Flow — the attempt lifecycle (concept illustration)
-
-⚠️ Same caveat. Decorative; for the precise version use Mermaid in §7.
-
-```
-A flat-vector cyclical flow illustration showing one iteration of a loop.
-A circular arrangement of four nodes connected by a teal arrow that loops
-clockwise: (1) a magnifying-glass node "verify", branching to (2) a green
-check-mark node "pass / done", (3) a wrench node "advance one step" that
-arcs back to the start, and (4) a pause/clock node "waiting". A bullseye
-target sits at the center of the circle.
-
-Style: minimal geometric flat design, midnight navy background (#0E1726),
-electric teal (#2DD4BF) arrows, warm amber (#F5A524) center target, signal
-green (#22C55E) for the success node. Icons over words; avoid text labels.
-Square or 4:3 composition, balanced, clean.
-```
-
----
-
-## 5. nano banana usage tips
+## 4. nano banana usage tips
 
 - **Aspect ratio:** state it in the prompt ("square 1:1", "wide 16:9",
   "4:1 lockup"). nano banana honors explicit ratios well.
@@ -158,48 +156,3 @@ Square or 4:3 composition, balanced, clean.
   the first spelling.
 - **Consistency:** paste the *Shared visual identity* hex codes into every
   prompt so the set coheres.
-
----
-
-## 6. Architecture diagram — Mermaid (accurate, README-ready)
-
-GitHub renders this natively; text is always correct; edit it in place.
-
-```mermaid
-flowchart TD
-    U["You (Manager)<br/>Claude Code session"] -->|"/goal-init · /goal-flash"| G["goal.md<br/>objective + constraints + verification"]
-    U -->|"/goal-run · goaloop run"| O["Orchestrator<br/>(detached Python loop, not an LLM)"]
-
-    O -->|"spawn fresh process per attempt"| R["claude -p Runner (attempt NNN)<br/>no memory of prior attempts"]
-    R -->|"reads"| W[("Workspace on disk<br/>goal.md · memory/ · attempts/")]
-    R -->|"runs Verification once"| V{"pass?"}
-
-    V -->|"pass"| DONE(["exit — goal met ✓"])
-    V -->|"fail → advance one unit"| ADV["write attempts/NNN.md<br/>maybe update learnings.md"]
-    ADV -->|"loop: new session"| O
-    V -->|"blocked"| HUMAN(["exit — needs a human"])
-    V -->|"long job"| WAIT["in_progress / ScheduleWakeup<br/>pause, then resume same session"]
-    WAIT --> R
-
-    W -.->|"edit mid-run to steer"| U
-```
-
----
-
-## 7. Attempt lifecycle — Mermaid (accurate, README-ready)
-
-```mermaid
-stateDiagram-v2
-    [*] --> LoadContext: fresh claude -p Runner
-    LoadContext --> Verify: read goal.md, learnings, recent attempts
-    Verify --> Pass: objective met & no constraint violated
-    Verify --> Advance: fail (and not blocked)
-    Verify --> Blocked: unreachable without a human
-    Verify --> InProgress: long pollable job running
-
-    Advance --> Record: do ONE unit of work
-    Record --> [*]: status=advanced → next attempt (new session)
-    Pass --> [*]: status=pass → orchestrator exits
-    Blocked --> [*]: status=blocked → orchestrator exits
-    InProgress --> [*]: pause, resume SAME session later
-```
