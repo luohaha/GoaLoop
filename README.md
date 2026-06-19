@@ -44,45 +44,16 @@ rationale.
 
 ## Architecture in one picture
 
-```mermaid
-flowchart TD
-    U["You (Manager)<br/>Claude Code session"] -->|"/goal-init · /goal-flash"| G["goal.md<br/>objective + constraints + verification"]
-    U -->|"/goal-run · goaloop run"| O["Orchestrator<br/>(detached Python loop, not an LLM)"]
+<p align="center">
+  <img src="docs/assets/architecture.png" alt="GoaLoop architecture: a Manager starts an Orchestrator, which spawns a fresh Runner per attempt; each Runner verifies, and on fail the loop spawns the next Runner until it passes" width="640">
+</p>
 
-    O -->|"spawn fresh process per attempt"| R["claude -p Runner (attempt NNN)<br/>no memory of prior attempts"]
-    R -->|"reads"| W[("Workspace on disk<br/>goal.md · memory/ · attempts/")]
-    R -->|"runs Verification once"| V{"pass?"}
-
-    V -->|"pass"| DONE(["exit — goal met ✓"])
-    V -->|"fail → advance one unit"| ADV["write attempts/NNN.md<br/>maybe update learnings.md"]
-    ADV -->|"loop: new session"| O
-    V -->|"blocked"| HUMAN(["exit — needs a human"])
-    V -->|"long job"| WAIT["in_progress / ScheduleWakeup<br/>pause, then resume same session"]
-    WAIT --> R
-
-    W -.->|"edit mid-run to steer"| U
-```
-
-### The attempt lifecycle
-
-Each attempt is a fresh `claude -p` Runner. Verification is two-state
-(`pass` / `fail`); the Runner ends with one of four terminators.
-
-```mermaid
-stateDiagram-v2
-    [*] --> LoadContext: fresh claude -p Runner
-    LoadContext --> Verify: read goal.md, learnings, recent attempts
-    Verify --> Pass: objective met & no constraint violated
-    Verify --> Advance: fail (and not blocked)
-    Verify --> Blocked: unreachable without a human
-    Verify --> InProgress: long pollable job running
-
-    Advance --> Record: do ONE unit of work
-    Record --> [*]: status=advanced → next attempt (new session)
-    Pass --> [*]: status=pass → orchestrator exits
-    Blocked --> [*]: status=blocked → orchestrator exits
-    InProgress --> [*]: pause, resume SAME session later
-```
+Three layers: a **Manager** — the Claude Code agent you operate — starts
+the **Orchestrator** (a detached loop, not an LLM), which spawns a fresh
+**Runner** agent (`claude -p`) for each attempt. Every Runner verifies the
+current state — on `pass` the loop exits; on `fail` it advances one unit
+and the Orchestrator spawns the next Runner. The loop repeats until the
+verification passes.
 
 ## Install
 
