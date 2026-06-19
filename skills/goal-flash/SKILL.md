@@ -121,6 +121,9 @@ rather than interviewing for it:
 From here, progress relay is identical to `/goal-run` — read
 `.goaloop/status.txt`, `.goaloop/attempt_complete.json`, and the latest
 `attempts/NNN.md`, and report PASS / blocked / error as that skill describes.
+In particular, to auto-relay each completed round without polling, arm the
+persistent **Monitor** described in `/goal-run` Step 4 ("Auto-relay each
+completed round") rather than a fast `ScheduleWakeup`/`/loop` cadence.
 
 ## What you MUST NOT do
 

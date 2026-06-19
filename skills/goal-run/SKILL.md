@@ -63,7 +63,43 @@ Read these files to report status (do not infer from anything else):
   what was tried and observed.
 
 When the user asks "how's it going?", read these and summarize the
-latest attempt(s). To follow along live, poll `status.txt` every ~30s.
+latest attempt(s).
+
+### Auto-relay each completed round (don't poll)
+
+Rounds take minutes to hours, so don't sit in a polling loop or a
+`ScheduleWakeup`/`/loop` cadence — that re-reads your whole context every tick
+for nothing. Instead arm a **persistent Monitor** on the workspace's own
+signals; it fires a `<task-notification>` that wakes you the instant a round
+lands, at ~zero context cost until then:
+
+```bash
+ws=~/.goaloop/<name>
+prev=$(ls -1 "$ws/attempts/" 2>/dev/null | grep -c '\.md$' || echo 0)
+while true; do
+  cur=$(ls -1 "$ws/attempts/" 2>/dev/null | grep -c '\.md$' || echo 0)
+  if [ "$cur" -gt "$prev" ]; then
+    echo "ROUND_COMPLETE: attempts/ now has $cur record(s)"; prev=$cur
+  fi
+  pgrep -f "goaloop run.*<name>" >/dev/null 2>&1 || { echo "ORCHESTRATOR_STOPPED"; break; }
+  sleep 60
+done
+```
+
+Run it with the Monitor tool, `persistent: true`. A new `attempts/NNN.md` is a
+clean round boundary — an `in_progress`/quota pause writes none, so the Monitor
+only fires on a genuinely completed attempt (or when the orchestrator exits:
+`pass`/`blocked`/`error`/stopped). On each fire, read the new `NNN.md` and relay
+**concisely** (status + key metrics), then handle the terminal cases below.
+
+Notes:
+- This only works while *this* interactive session stays alive to receive the
+  notification — it's not for a fire-and-exit invocation.
+- Honor opt-out: if the user only wanted a one-off status, or said don't notify,
+  skip the Monitor and just answer on demand with `goaloop status` + the files
+  above. If they later say "stop notifying," `TaskStop` the Monitor.
+- A long `ScheduleWakeup` (≥20 min) is fine as a *fallback* heartbeat if you want
+  belt-and-suspenders, but the Monitor is the primary signal — don't poll fast.
 
 Most statuses are transient — `running`, `advanced — next attempt in …`,
 `in_progress — waiting …`, and `quota hit — sleeping …` all mean **still
