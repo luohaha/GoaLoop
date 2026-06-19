@@ -65,6 +65,30 @@ def _ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
+def _terminate(pid: int) -> None:
+    """SIGTERM the orchestrator AND its `claude -p` child.
+
+    A backgrounded orchestrator is its own session/group leader
+    (`start_new_session=True` in `_run_background`), so signaling the whole
+    process group reaches the in-flight Runner subprocess too. Signaling only
+    the orchestrator pid leaves that child orphaned — it keeps running and can
+    race a later restart on the same session. For a foreground run (which
+    shares the caller's process group) fall back to the bare pid so we don't
+    take the caller down with it.
+    """
+    try:
+        pgid = os.getpgid(pid)
+    except OSError:
+        return
+    try:
+        if pgid == pid:  # backgrounded run → group leader; take the group
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
 # ---- commands --------------------------------------------------------
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -169,8 +193,8 @@ def cmd_stop(args: argparse.Namespace) -> int:
         print("Not running.")
         return 0
     print(f"Sending SIGTERM to orchestrator (PID {pid})…")
-    os.kill(pid, signal.SIGTERM)
-    print("Stop signal sent; the orchestrator will exit after the current attempt's process settles.")
+    _terminate(pid)
+    print("Stop signal sent; the orchestrator and its Runner subprocess will exit shortly.")
     return 0
 
 
