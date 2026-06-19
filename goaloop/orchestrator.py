@@ -107,6 +107,19 @@ class Orchestrator:
                     highest = max(highest, int(m.group(1)))
         return highest + 1
 
+    def _goal_mtime(self) -> float | None:
+        """mtime of goal.md (or None if missing).
+
+        Travels with the active session in the checkpoint so a restart can
+        tell whether the goal was edited since the session started — a resumed
+        session only gets "Continue." and never re-reads goal.md, so resuming
+        across a goal change would silently run the OLD goal.
+        """
+        try:
+            return (self.ws / "goal.md").stat().st_mtime
+        except OSError:
+            return None
+
     def _load_checkpoint(self) -> dict:
         if self.checkpoint_path.exists():
             try:
@@ -205,8 +218,21 @@ with a single line that is exactly one of these JSON objects:
 
     def run(self) -> None:
         cp = self._load_checkpoint()
-        # If a prior process died mid-attempt, resume that session.
+        # If a prior process died mid-attempt, resume that session — UNLESS
+        # goal.md was edited since the session started. A resumed session only
+        # gets "Continue." and never re-reads goal.md, so resuming across a
+        # goal change would silently keep running the OLD goal (it did, once).
+        # When the goal moved, drop the resume and start a fresh attempt that
+        # reads the new goal.
         resume_session: str | None = cp.get("active_session_id")
+        active_goal_mtime: float | None = cp.get("goal_mtime")
+        if resume_session and active_goal_mtime != self._goal_mtime():
+            self.log(
+                f"[orchestrator] goal.md changed since session "
+                f"{resume_session[:8]} started — starting fresh, not resuming"
+            )
+            resume_session = None
+            active_goal_mtime = None
         consecutive_failures = 0
 
         while True:
@@ -218,10 +244,14 @@ with a single line that is exactly one of these JSON objects:
                 self.log(f"[orchestrator] attempt {n:03d}: resuming session {session_id[:8]}")
             else:
                 session_id, resume = str(uuid.uuid4()), False
+                active_goal_mtime = self._goal_mtime()  # pin goal version to this session
                 prompt = self._build_brief(n)
             # Persist the active session BEFORE the call so a crash leaves a
-            # recoverable breadcrumb.
-            self._save_checkpoint(active_session_id=session_id, attempt=n)
+            # recoverable breadcrumb. goal_mtime travels with it so a restart
+            # can detect a goal edit and refuse to resume a now-stale session.
+            self._save_checkpoint(
+                active_session_id=session_id, attempt=n, goal_mtime=active_goal_mtime,
+            )
             self._set_status(f"attempt {n:03d}: running")
 
             try:
