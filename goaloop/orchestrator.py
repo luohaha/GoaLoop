@@ -288,12 +288,27 @@ with a single line that is exactly one of these JSON objects:
             # job. Keep the attempt number AND the session; exit during the
             # wait (zero tokens), then --resume the same session to check on
             # it. This does NOT count as a failure or an advance.
-            if status == "in_progress":
-                hint = term.get("wait_secs")
+            #
+            # Two ways the Runner can signal this: the explicit
+            # {"status":"in_progress"} terminator, OR a ScheduleWakeup tool
+            # call — the way it naturally pauses in the interactive harness.
+            # Honoring the tool call means a Runner that kicks off a long job
+            # and schedules a wakeup but forgets the terminator line is still
+            # paused + resumed, not killed as a "malformed" attempt (the
+            # failure mode that ends an otherwise-healthy run).
+            wake_secs = result.requested_resume_secs
+            if status == "in_progress" or (status is None and wake_secs):
+                if status == "in_progress":
+                    hint = term.get("wait_secs")
+                    if not (isinstance(hint, (int, float)) and hint > 0):
+                        hint = wake_secs  # fall back to the ScheduleWakeup delay
+                    note = str(term.get("note", "")).strip()
+                else:
+                    hint = wake_secs
+                    note = "paused via ScheduleWakeup (no terminator line)"
                 wait = (min(int(hint), IN_PROGRESS_MAX_SECS)
                         if isinstance(hint, (int, float)) and hint > 0
                         else IN_PROGRESS_FALLBACK_SECS)
-                note = str(term.get("note", "")).strip()
                 self._mark_complete(n, "in_progress", result.cost_usd)
                 self._set_status(
                     f"attempt {n:03d}: in_progress — waiting {wait}s before "

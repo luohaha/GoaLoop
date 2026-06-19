@@ -23,9 +23,18 @@ constraint violated) or **fail**.
 Run any long-running step to completion before judging. If it's one command that
 blocks until done, wait inline. If it needs polling (submit, then poll until
 ready), don't sleep-and-recheck in a live turn — it wastes tokens; instead start
-the job and **pause** with the `in_progress` terminator (§7), and you'll be
-brought back later with your context intact to finish. Keep a short excerpt of
-the output for the record.
+the job and **pause**, and you'll be brought back later with your context intact
+to finish. Keep a short excerpt of the output for the record.
+
+To pause, do ONE of these and then end your turn — never just narrate "awaiting
+completion" and stop (a turn that ends with neither is a malformed attempt):
+- emit the `in_progress` terminator (§7), **or**
+- call the `ScheduleWakeup` tool with `delaySeconds` set to how long to wait.
+
+Both are honored identically: the loop exits during the wait (zero tokens) and
+`--resume`s this same session afterward. Do NOT rely on a backgrounded `Monitor`
+/ shell job to "notify" you — this headless Runner has no event loop; the only
+ways to pause-and-resume are the two above.
 
 **Judge-style (LLM-as-judge):** if Verification asks you to score an artifact
 against a rubric, do it yourself this turn — read rubric + artifact, score each
