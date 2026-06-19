@@ -251,6 +251,21 @@ After running, the workspace looks like:
   in parallel (`goaloop run` each), but there's no built-in coordination
   between them.
 
+## Comparison to other tools
+
+The closest sibling is Codex's built-in `goal` feature, which solves the
+same "keep working toward a target across many turns" problem with nearly
+opposite choices: an **in-process, continuation-based** loop with
+self-audited completion, versus GoaLoop's **out-of-process, fresh-attempt**
+loop with an externally verified gate. In short — Codex makes the agent its
+own tireless project manager; GoaLoop makes the system an impartial referee
+over disposable workers, with verification as a load-bearing, executable
+gate rather than a self-report.
+
+See [`docs/comparison-codex.md`](docs/comparison-codex.md) for the full
+side-by-side — architecture, data model, and an in-depth look at where the
+verification mechanisms diverge.
+
 ## Status
 
 v0.1. The `goaloop` loop, CLI, and skills are implemented and pass an
