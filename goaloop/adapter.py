@@ -54,6 +54,11 @@ class ClaudeResult:
     text: str
     session_id: str
     cost_usd: float | None = None
+    # delaySeconds of the LAST ScheduleWakeup tool call the Runner made this
+    # turn (or None). Lets the orchestrator treat a Runner that paused via the
+    # tool — the way it naturally would in the interactive harness — as
+    # in_progress, even if it forgot the {"status":"in_progress"} terminator.
+    requested_resume_secs: int | None = None
 
 
 class ClaudeAdapter:
@@ -128,7 +133,7 @@ class ClaudeAdapter:
             bufsize=1,
         )
 
-        result_text, cost = self._parse_stream(proc)
+        result_text, cost, resume_secs = self._parse_stream(proc)
         self._wait_for_exit(proc)
 
         if proc.returncode and not result_text:
@@ -139,12 +144,24 @@ class ClaudeAdapter:
         if result_text and _TRANSIENT_RE.search(result_text):
             raise TransientError(result_text.strip()[:300], session_id)
 
-        return ClaudeResult(text=result_text, session_id=session_id, cost_usd=cost)
+        return ClaudeResult(
+            text=result_text, session_id=session_id, cost_usd=cost,
+            requested_resume_secs=resume_secs,
+        )
 
-    def _parse_stream(self, proc: subprocess.Popen) -> tuple[str, float | None]:
-        """Read stream-json JSONL, log progress, return (result_text, cost)."""
+    def _parse_stream(
+        self, proc: subprocess.Popen
+    ) -> tuple[str, float | None, int | None]:
+        """Read stream-json JSONL, log progress.
+
+        Returns (result_text, cost, requested_resume_secs). The last value is
+        the `delaySeconds` of the final ScheduleWakeup tool call this turn (or
+        None) — the orchestrator uses it to treat a tool-call pause as
+        in_progress.
+        """
         result_text = ""
         cost: float | None = None
+        requested_resume_secs: int | None = None
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.strip()
@@ -167,7 +184,17 @@ class ClaudeAdapter:
                             if text:
                                 self.log(f"[runner] {_clip(text, 500)}")
                         elif block.get("type") == "tool_use":
-                            self.log(f"[runner] tool_use: {block.get('name', '?')}")
+                            name = block.get("name", "?")
+                            self.log(f"[runner] tool_use: {name}")
+                            # A ScheduleWakeup tool call is the Runner pausing
+                            # the way it does in the interactive harness. Last
+                            # one wins. Surfacing its delay lets the loop pause
+                            # + resume even when the Runner skipped the
+                            # {"status":"in_progress"} terminator line.
+                            if name == "ScheduleWakeup":
+                                delay = (block.get("input") or {}).get("delaySeconds")
+                                if isinstance(delay, (int, float)) and delay > 0:
+                                    requested_resume_secs = int(delay)
             elif etype == "result":
                 result_text = event.get("result", "") or ""
                 cost = event.get("total_cost_usd", event.get("cost_usd"))
@@ -178,7 +205,7 @@ class ClaudeAdapter:
                 # side effects settle, which would otherwise block the stdout
                 # iterator indefinitely on a long, tool-heavy attempt.
                 break
-        return result_text, cost
+        return result_text, cost, requested_resume_secs
 
     @staticmethod
     def _wait_for_exit(proc: subprocess.Popen, timeout: float = 10.0) -> None:
