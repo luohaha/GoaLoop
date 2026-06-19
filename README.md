@@ -48,9 +48,9 @@ rationale.
   <img src="docs/assets/architecture.png" alt="GoaLoop architecture: a Manager starts an Orchestrator, which spawns a fresh Runner per attempt; each Runner verifies, and on fail the loop spawns the next Runner until it passes" width="640">
 </p>
 
-Three layers: a **Manager** (your Claude Code session) starts the
-**Orchestrator** (a detached loop, not an LLM), which spawns a fresh
-**Runner** (`claude -p`) for each attempt. Every Runner verifies the
+Three layers: a **Manager** — the Claude Code agent you operate — starts
+the **Orchestrator** (a detached loop, not an LLM), which spawns a fresh
+**Runner** agent (`claude -p`) for each attempt. Every Runner verifies the
 current state — on `pass` the loop exits; on `fail` it advances one unit
 and the Orchestrator spawns the next Runner. The loop repeats until the
 verification passes.

@@ -101,6 +101,11 @@ This is the README's "Architecture in one picture" → save as
 top-to-bottom — Manager → Orchestrator → Runner — with a **loop** showing
 repeated attempts and a **verification gate** that decides pass vs. loop-again.
 
+Note on roles: the **Manager and Runner are both AI agents**; only the
+**Orchestrator is a deterministic program** (not an AI). The human is *not*
+a layer — they sit outside and operate the Manager (which is a Claude Code
+session). Depict the Manager as an agent, with a small human beside it.
+
 ⚠️ It has a few short text labels; nano banana may misspell them. Generate
 several and pick a clean one, **or** generate it text-free (icons only) and
 add the four labels — "Manager", "Orchestrator", "Runner", "verify" — in
@@ -111,17 +116,22 @@ A clean flat-vector architecture diagram, wide 16:9, on a deep midnight
 navy background (#0E1726). Three clearly separated horizontal layers
 stacked top to bottom, connected by arrows:
 
-Top layer — "Manager": a person sitting at a laptop / terminal, the human
-who kicks things off. A downward arrow labeled "start" goes to the middle
-layer.
+Top layer — "Manager": an AI assistant agent (a friendly robot head inside
+a chat / terminal window, representing a Claude Code session). Off to its
+side, a small human figure interacts with it (a speech bubble between the
+person and the agent), making clear the human operates the Manager but is
+not itself part of the system. A downward arrow labeled "start" goes from
+the Manager agent to the middle layer.
 
 Middle layer — "Orchestrator": a single hexagonal gear / control-hub icon,
-clearly a deterministic machine, not an AI. Label it "Orchestrator (loop,
-not an AI)". A downward arrow labeled "spawn" goes to the bottom layer.
+clearly a deterministic machine, NOT an AI (no face, mechanical). Label it
+"Orchestrator (loop, not an AI)". A downward arrow labeled "spawn" goes to
+the bottom layer.
 
-Bottom layer — "Runner": an AI worker chip / friendly robot head, drawn as
-three slightly overlapping copies fanned out left-to-right (attempt 1, 2,
-3…) to show that a fresh Runner is spawned each attempt.
+Bottom layer — "Runner": an AI worker agent, the same robot-head style as
+the Manager to signal it is also an agent, drawn as three slightly
+overlapping copies fanned out left-to-right (attempt 1, 2, 3…) to show that
+a fresh Runner agent is spawned each attempt.
 
 To the right of the Runner sits a verification gate: a bullseye target with
 two outgoing arrows — a green check-mark arrow labeled "pass" leading to a
