@@ -87,15 +87,10 @@ class Orchestrator:
         self.status_path = self.state_dir / "status.txt"
         self.complete_path = self.state_dir / "attempt_complete.json"
         self.continue_path = self.state_dir / "continue.json"
-        # Async human feedback channel (optional). suggestions.md is a MAILBOX,
-        # not a log: whatever it holds is undelivered guidance. Each fresh
-        # attempt atomically CLAIMS its contents (rename aside), injects them as
-        # NEW into the brief, archives them, and clears the file — so there is
-        # no byte cursor to drift when the human edits/deletes (the old model).
-        self.suggestions_path = self.ws / "suggestions.md"
-        # Atomic-claim staging + permanent archive of delivered notes.
-        self.suggestions_inflight = self.state_dir / "suggestions.inflight"
-        self.suggestions_archive = self.state_dir / "suggestions.delivered.md"
+        # Human feedback is delivered Runner-side, not here: the manager writes
+        # a note to suggestions/NNN.md and the Runner of attempt NNN reads it as
+        # context for that round (see agents/goal-runner.md, "Load context").
+        # The orchestrator stays out of it — no injection, no consumption.
 
         self.adapter = ClaudeAdapter(
             cwd=str(self.ws),
@@ -193,40 +188,6 @@ class Orchestrator:
         self._mark_complete(attempt, "error", None)
         self._clear_active()
 
-    def _consume_suggestions(self, n: int) -> str:
-        """Claim any pending human notes from suggestions.md (the mailbox) and
-        return them as a brief section, or "" if none.
-
-        suggestions.md holds undelivered guidance; we CLAIM it by atomically
-        renaming it aside. That rename is the whole trick: a human append that
-        races the claim lands either in the batch we just took or in a fresh
-        file the next attempt picks up — never lost, never delivered twice, and
-        with no byte cursor to drift when the human edits or deletes earlier
-        notes. The claimed text is appended to suggestions.delivered.md
-        (stamped with the attempt) so history survives the cleared live file.
-        goal.md stays the channel for permanent/structural guidance.
-
-        Crash-safety: the inflight file persists until the archive write
-        succeeds, so a crash mid-claim leaves it for the next call to recover
-        (at worst delivered twice — harmless — never dropped).
-        """
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        if not self.suggestions_inflight.exists():
-            if not self.suggestions_path.exists():
-                return ""
-            try:
-                self.suggestions_path.rename(self.suggestions_inflight)
-            except OSError:
-                return ""
-        text = self.suggestions_inflight.read_text().strip()
-        if not text:
-            self.suggestions_inflight.unlink(missing_ok=True)
-            return ""
-        with self.suggestions_archive.open("a") as fh:
-            fh.write(f"\n## Delivered to attempt {n:03d}\n\n{text}\n")
-        self.suggestions_inflight.unlink(missing_ok=True)
-        return f"\n## Human guidance (NEW — address this attempt)\n\n{text}\n"
-
     def _wait_for_continue(self, n: int) -> None:
         """Copilot mode: block until the human approves the next attempt.
 
@@ -244,10 +205,8 @@ class Orchestrator:
         self.log("[orchestrator] approval received — continuing")
 
     def _build_brief(self, n: int) -> str:
-        guidance = self._consume_suggestions(n)
         return f"""Workspace: {self.ws}
 This is attempt {n:03d}; write your attempt record to attempts/{n:03d}.md.
-{guidance}
 Run one attempt per your system-prompt workflow, then end your final message
 with a single line that is exactly one of these JSON objects:
   {{"status": "pass", "verification": "<one-line summary>"}}

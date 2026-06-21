@@ -152,12 +152,15 @@ durable guidance channels, by intent serving different purposes.
   (or a file it references, like a rubric). The next attempt's Runner
   reads the updated spec naturally — no relay needed. Propose the edit,
   make it on the user's confirmation; no restart required.
-- **Transient per-attempt note**: append a line to
-  `~/.goaloop/<name>/suggestions.md` (a mailbox). The next fresh attempt
-  claims it exactly once — injected into the brief, archived to
-  `.goaloop/suggestions.delivered.md`, and the file cleared. Use this for
-  one-off nudges (e.g. dropped while AFK) rather than changes that should
-  persist — those belong in `goal.md`.
+- **Transient per-attempt note**: the Runner of attempt NNN reads
+  `~/.goaloop/<name>/suggestions/NNN.md` at the start of that attempt. So
+  write the note there, targeting the round that will read it: check
+  `goaloop status` for the current attempt and write the NEXT number — if
+  attempt 005 is running, write `suggestions/006.md`. The file stays in place
+  afterward as an audit trail (parallel to `attempts/NNN.md`). Use this for
+  one-off nudges (e.g. dropped while AFK); `goal.md` is for changes that
+  should persist. (If the loop has already moved past the round you targeted,
+  the note just sits unread — re-point it at the new next attempt.)
 - **Stop the orchestrator**: `goaloop stop <name>` (sends SIGTERM; it
   exits after the in-flight attempt's process settles).
 

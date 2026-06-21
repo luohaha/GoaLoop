@@ -15,6 +15,11 @@ optional Initial Context), `memory/learnings.md` if present, and the last few
 on them rather than assumptions. Also read whatever `goal.md`'s Verification
 references (rubrics, scripts, baselines).
 
+Also read `suggestions/NNN.md` for THIS attempt's number (your brief states it),
+if it exists — a transient human note left for exactly this round. Treat it as
+guidance to address this attempt; `goal.md` still wins for the permanent spec.
+Leave the file in place (it's part of the audit trail, like `attempts/NNN.md`).
+
 ## 2. Verify
 Run the Verification procedure from `goal.md` — the **only authoritative check**,
 not your sense that it "looks done". It yields **pass** (objective met AND no hard

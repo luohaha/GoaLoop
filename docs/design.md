@@ -235,8 +235,9 @@ tokens.
 ```
 <workspace>/
 ├── goal.md            # Objective + Hard Constraints + Verification spec
-├── config.yaml        # Optional: model / interval / mode (see below)
-├── suggestions.md     # Optional: async per-attempt human notes (see below)
+├── config.yaml        # Optional: model / interval / mode / caps (see below)
+├── suggestions/       # Optional: per-attempt human notes (see below)
+│   └── 006.md         # suggestions/NNN.md is read by the Runner of attempt NNN
 ├── memory/
 │   └── learnings.md   # Run-level curated knowledge; Runner self-maintains, ~4KB cap
 ├── attempts/
@@ -247,14 +248,13 @@ tokens.
     ├── state.json     # Checkpoint: active session id + cumulative counters/cost for resume
     ├── status.txt     # Current one-line orchestrator status (read by /goal-run)
     ├── attempt_complete.json  # Last completed attempt's {attempt, status, cost_usd, total_cost_usd}
-    ├── suggestions.delivered.md  # Archive of consumed suggestions.md notes, stamped per attempt
     ├── continue.json  # copilot-mode approval token (written by `goaloop continue`)
     ├── orchestrator.log       # Per-attempt log: Runner messages, tool calls, results
     └── pipeline.pid   # PID of the running orchestrator (for status/stop)
 ```
 
 The `goal.md` + `memory/` + `attempts/` triple is the goal record GoaLoop
-requires; `config.yaml` and `suggestions.md` are optional human inputs, and
+requires; `config.yaml` and `suggestions/` are optional human inputs, and
 `.goaloop/` is the orchestrator's own bookkeeping and can be deleted
 between runs without losing the audit trail. Anything else (scripts the
 verification uses, source code being modified, datasets, etc.) lives wherever
@@ -443,8 +443,8 @@ The orchestrator, not the Manager, performs the per-attempt mechanics:
 3. **Spawn the Runner.** `claude -p <brief> --append-system-prompt
    goal-runner.md --output-format stream-json --session-id <uuid>
    --dangerously-skip-permissions`. The brief carries the workspace path,
-   the attempt number, the read-context + terminator instructions, and —
-   on a fresh attempt — any NEW `suggestions.md` text since the cursor.
+   the attempt number, and the read-context + terminator instructions; the
+   Runner itself reads `suggestions/NNN.md` for that attempt as context.
 4. **Parse the terminator** (`{"status": pass|advanced|in_progress|blocked}`)
    and branch: `pass`/`blocked` → exit; `advanced` (and `attempts/NNN.md`
    exists) → pace (or, in copilot mode, wait for approval), then next
@@ -531,27 +531,28 @@ on the user's confirmation** — not to carry the guidance itself.
 This is also why `goal.md` is mutable mid-run: it is the steering wheel, not
 just the starting configuration.
 
-**`suggestions.md` — transient / per-attempt.**
+**`suggestions/` — transient / per-attempt.**
 
 For a one-off note that does not belong in the goal spec (e.g. something left
-while AFK — "try lock granularity next"), the human appends to
-`<workspace>/suggestions.md`. The file is a **mailbox, not a log**: whatever it
-holds is undelivered. On each FRESH attempt the orchestrator atomically
-*claims* its contents (renaming it aside), injects them into the Runner's brief
-as a "Human guidance (NEW)" section, archives them to
-`.goaloop/suggestions.delivered.md`, and clears the file — so each note reaches
-exactly one attempt. The atomic rename is what makes this race-free: a note
-appended while a claim is in flight lands in either that batch or a fresh file
-the next attempt picks up — never lost, never delivered twice, with no byte
-cursor to drift when the human edits or deletes earlier notes. Use `goal.md`
-for changes that should persist; use `suggestions.md` for transient nudges.
+while AFK — "try lock granularity next"), the manager drops a note file into
+`<workspace>/suggestions/` — a directory parallel to `attempts/`. Delivery is
+**Runner-side, by attempt number**: the Runner of attempt NNN reads
+`suggestions/NNN.md` as part of its Load-context step (just like it reads
+`goal.md` and `attempts/`), so the manager — which knows the current attempt
+from status — names the note for the round that will read it (`suggestions/006.md`
+while 005 runs). The orchestrator never touches it; there is no injection, no
+consumption, no cursor. The file stays in place afterward as part of the audit
+trail. Because delivery is an exact number match, a note whose round the loop
+has already passed simply sits unread until re-pointed — an accepted, low-odds
+trade for the simplicity of "Runner reads its own `suggestions/NNN.md`". Use
+`goal.md` for changes that should persist; `suggestions/` for transient nudges.
 
 **The Manager distinguishes messages for itself vs. goal edits.**
 
 | User message | Manager's response |
 |---|---|
 | "How is it going?" | Answer directly by reading `.goaloop/status.txt` + latest `attempts/NNN.md` |
-| "Try lock granularity instead next time" | A transient nudge → append to `suggestions.md` (next attempt sees it once); a permanent change → propose editing `goal.md`'s Initial Context |
+| "Try lock granularity instead next time" | A transient nudge → write `suggestions/<next-attempt>.md` (that Runner reads it); a permanent change → propose editing `goal.md`'s Initial Context |
 | "Stop the orchestrator" | `goaloop stop <name>`; confirm it stopped |
 | "Change the target to P99 < 3s" | Propose editing `goal.md`'s Objective; edit on confirmation |
 | "Hmm" / "OK" / chit-chat | Ignore |
@@ -633,8 +634,8 @@ Human pacing during a run is achieved by:
 - **Reading status** via `/goal-run` (or `goaloop status`, or
   `tail -f .goaloop/orchestrator.log`) — the orchestrator writes `status.txt` and
   `attempt_complete.json` each attempt.
-- **Editing `goal.md`** (permanent) or **appending to `suggestions.md`**
-  (transient, per-attempt) to steer — the next attempt's Runner picks it up
+- **Editing `goal.md`** (permanent) or **dropping a `suggestions/NNN.md`**
+  (transient, per-attempt) to steer — the Runner of that attempt picks it up
   (see Human guidance protocol).
 - **`goaloop continue`** to release the next attempt in copilot mode.
 - **`goaloop stop`** to halt earlier than `pass`.
@@ -683,9 +684,9 @@ The following were considered and deliberately not built. Each appears here
 with the reason so future contributors don't reintroduce them by reflex.
 
 > **Implemented after v0.1 (now included).** Two features once listed here as
-> excluded have since been built: `suggestions.md` (a transient per-attempt
-> human → agent channel, NEW-since-cursor injection — see Human guidance
-> protocol) and copilot mode (the `--mode copilot` human-review pause,
+> excluded have since been built: `suggestions/` (a transient per-attempt
+> human → agent channel — the Runner of attempt NNN reads `suggestions/NNN.md`;
+> see Human guidance protocol) and copilot mode (the `--mode copilot` human-review pause,
 > released with `goaloop continue` — see How to run). They are documented
 > above and are no longer exclusions.
 
