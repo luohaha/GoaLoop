@@ -261,6 +261,15 @@ See [`docs/comparison-codex.md`](docs/comparison-codex.md) for the full
 side-by-side — architecture, data model, and an in-depth look at where the
 verification mechanisms diverge.
 
+Claude Code's own built-in `/goal` command is the closest in-host sibling:
+an in-process loop gated by a fresh small model that judges your condition
+from the **conversation transcript** (it can't run commands itself), versus
+GoaLoop's out-of-process loop gated by a fresh process that **re-runs the
+check against real workspace state**. On the verification-independence axis
+Claude `/goal` sits between Codex's self-audit and GoaLoop's executable
+gate. See [`docs/comparison-claude-goal.md`](docs/comparison-claude-goal.md)
+for the full side-by-side.
+
 ## Status
 
 v0.1. The `goaloop` loop, CLI, and skills are implemented and pass an
