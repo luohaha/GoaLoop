@@ -153,10 +153,11 @@ durable guidance channels, by intent serving different purposes.
   reads the updated spec naturally — no relay needed. Propose the edit,
   make it on the user's confirmation; no restart required.
 - **Transient per-attempt note**: append a line to
-  `~/.goaloop/<name>/suggestions.md`. The next fresh attempt sees the
-  text added since it was last read, once (then it's not repeated). Use
-  this for one-off nudges (e.g. dropped while AFK) rather than changes
-  that should persist — those belong in `goal.md`.
+  `~/.goaloop/<name>/suggestions.md` (a mailbox). The next fresh attempt
+  claims it exactly once — injected into the brief, archived to
+  `.goaloop/suggestions.delivered.md`, and the file cleared. Use this for
+  one-off nudges (e.g. dropped while AFK) rather than changes that should
+  persist — those belong in `goal.md`.
 - **Stop the orchestrator**: `goaloop stop <name>` (sends SIGTERM; it
   exits after the in-flight attempt's process settles).
 

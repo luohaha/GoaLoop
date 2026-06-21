@@ -182,10 +182,12 @@ and waits for your approval before the next one; release it with
 `goaloop continue <name>`. (`pass`/`blocked`/`error` are terminal, and
 `in_progress` resumes automatically — only `advanced` waits.)
 
-`suggestions.md` is an optional async channel: append a one-off note and
-the next fresh attempt sees the text added since it was last read, once.
-Use `goal.md` for permanent/structural changes, `suggestions.md` for
-transient nudges (e.g. left while AFK).
+`suggestions.md` is an optional async channel — a mailbox: append a one-off
+note and the next fresh attempt claims it (exactly once), archiving it to
+`.goaloop/suggestions.delivered.md` and clearing the file. Edit or delete
+freely before it's claimed; the claim is atomic, so nothing is lost or
+double-delivered. Use `goal.md` for permanent/structural changes,
+`suggestions.md` for transient nudges (e.g. left while AFK).
 
 ## Workspace contents
 

@@ -244,10 +244,10 @@ tokens.
 │   ├── 002.md
 │   └── ...            # Append-only: each file is written once, never modified
 └── .goaloop/          # Orchestrator-private state (not part of the goal record)
-    ├── state.json     # Checkpoint: active session id for crash/quota resume
+    ├── state.json     # Checkpoint: active session id + cumulative counters/cost for resume
     ├── status.txt     # Current one-line orchestrator status (read by /goal-run)
-    ├── attempt_complete.json  # Last completed attempt's {attempt, status, cost_usd}
-    ├── suggestions.cursor     # Byte offset into suggestions.md already shown
+    ├── attempt_complete.json  # Last completed attempt's {attempt, status, cost_usd, total_cost_usd}
+    ├── suggestions.delivered.md  # Archive of consumed suggestions.md notes, stamped per attempt
     ├── continue.json  # copilot-mode approval token (written by `goaloop continue`)
     ├── orchestrator.log       # Per-attempt log: Runner messages, tool calls, results
     └── pipeline.pid   # PID of the running orchestrator (for status/stop)
@@ -534,13 +534,17 @@ just the starting configuration.
 **`suggestions.md` — transient / per-attempt.**
 
 For a one-off note that does not belong in the goal spec (e.g. something left
-while AFK — "try lock granularity next"), the human appends a line to
-`<workspace>/suggestions.md`. On each FRESH attempt the orchestrator injects
-the text added since a stored cursor (`.goaloop/suggestions.cursor`) into the
-Runner's brief as a "Human guidance (NEW)" section, then advances the cursor
-— so each note is shown to exactly one attempt and not repeated. Use
-`goal.md` for changes that should persist; use `suggestions.md` for transient
-nudges.
+while AFK — "try lock granularity next"), the human appends to
+`<workspace>/suggestions.md`. The file is a **mailbox, not a log**: whatever it
+holds is undelivered. On each FRESH attempt the orchestrator atomically
+*claims* its contents (renaming it aside), injects them into the Runner's brief
+as a "Human guidance (NEW)" section, archives them to
+`.goaloop/suggestions.delivered.md`, and clears the file — so each note reaches
+exactly one attempt. The atomic rename is what makes this race-free: a note
+appended while a claim is in flight lands in either that batch or a fresh file
+the next attempt picks up — never lost, never delivered twice, with no byte
+cursor to drift when the human edits or deletes earlier notes. Use `goal.md`
+for changes that should persist; use `suggestions.md` for transient nudges.
 
 **The Manager distinguishes messages for itself vs. goal edits.**
 
