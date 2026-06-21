@@ -87,11 +87,10 @@ class Orchestrator:
         self.status_path = self.state_dir / "status.txt"
         self.complete_path = self.state_dir / "attempt_complete.json"
         self.continue_path = self.state_dir / "continue.json"
-        # Async human feedback channel (optional). The human appends notes to
-        # suggestions.md; we inject anything past the cursor as NEW into the
-        # next fresh attempt's brief, then advance the cursor.
-        self.suggestions_path = self.ws / "suggestions.md"
-        self.cursor_path = self.state_dir / "suggestions.cursor"
+        # Human feedback is delivered Runner-side, not here: the manager writes
+        # a note to suggestions/NNN.md and the Runner of attempt NNN reads it as
+        # context for that round (see agents/goal-runner.md, "Load context").
+        # The orchestrator stays out of it — no injection, no consumption.
 
         self.adapter = ClaudeAdapter(
             cwd=str(self.ws),
@@ -189,35 +188,6 @@ class Orchestrator:
         self._mark_complete(attempt, "error", None)
         self._clear_active()
 
-    def _suggestions_section(self) -> str:
-        """Build the NEW-since-cursor block from suggestions.md, then advance
-        the cursor (these notes are now delivered into a session).
-
-        Returns "" when there's no suggestions.md or nothing new. Only NEW
-        text is injected — older notes stay in the file for the human; the
-        Runner can read it directly if it wants history. goal.md remains the
-        channel for permanent/structural guidance; suggestions.md is for
-        transient per-attempt notes (e.g. left while AFK).
-        """
-        if not self.suggestions_path.exists():
-            return ""
-        content = self.suggestions_path.read_text()
-        if not content.strip():
-            return ""
-        cursor = 0
-        if self.cursor_path.exists():
-            try:
-                cursor = int(self.cursor_path.read_text().strip())
-            except ValueError:
-                cursor = 0
-        cursor = max(0, min(cursor, len(content)))
-        new = content[cursor:].strip()
-        if not new:
-            return ""
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.cursor_path.write_text(str(len(content)))  # delivered — advance
-        return f"\n## Human guidance (NEW — address this attempt)\n\n{new}\n"
-
     def _wait_for_continue(self, n: int) -> None:
         """Copilot mode: block until the human approves the next attempt.
 
@@ -235,10 +205,8 @@ class Orchestrator:
         self.log("[orchestrator] approval received — continuing")
 
     def _build_brief(self, n: int) -> str:
-        guidance = self._suggestions_section()
         return f"""Workspace: {self.ws}
 This is attempt {n:03d}; write your attempt record to attempts/{n:03d}.md.
-{guidance}
 Run one attempt per your system-prompt workflow, then end your final message
 with a single line that is exactly one of these JSON objects:
   {{"status": "pass", "verification": "<one-line summary>"}}

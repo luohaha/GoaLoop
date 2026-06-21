@@ -165,9 +165,9 @@ the same session indefinitely.)
 
 You stay in control throughout: read what each attempt did via
 `/goal-run` or `goaloop status`; **edit `goal.md`** for a permanent
-change or **append to `suggestions.md`** for a transient per-attempt
-note — the next attempt picks it up. There's no live conversation into a
-running Runner.
+change or **drop a `suggestions/NNN.md`** note for a transient per-attempt
+nudge — the Runner of that attempt reads it. There's no live conversation into
+a running Runner.
 
 ### Configuration & modes
 
@@ -182,10 +182,12 @@ and waits for your approval before the next one; release it with
 `goaloop continue <name>`. (`pass`/`blocked`/`error` are terminal, and
 `in_progress` resumes automatically — only `advanced` waits.)
 
-`suggestions.md` is an optional async channel: append a one-off note and
-the next fresh attempt sees the text added since it was last read, once.
-Use `goal.md` for permanent/structural changes, `suggestions.md` for
-transient nudges (e.g. left while AFK).
+`suggestions/` is an optional async channel — a directory parallel to
+`attempts/`: the Runner of attempt NNN reads `suggestions/NNN.md` at the start
+of that attempt, so the manager drops a note named for the round that will read
+it (e.g. `suggestions/006.md` while attempt 005 runs). The file stays in place
+afterward as part of the audit trail. Use `goal.md` for permanent/structural
+changes, `suggestions/` for transient nudges (e.g. left while AFK).
 
 ## Workspace contents
 
@@ -194,8 +196,8 @@ After running, the workspace looks like:
 ```
 <workspace>/
 ├── goal.md
-├── config.yaml           # optional: model / interval / mode
-├── suggestions.md        # optional: async per-attempt notes
+├── config.yaml           # optional: model / interval / mode / caps
+├── suggestions/          # optional: per-attempt human notes (NNN.md read by attempt NNN)
 ├── memory/
 │   └── learnings.md      # ~4KB cap; Runner curates this
 └── attempts/
