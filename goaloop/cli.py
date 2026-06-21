@@ -113,6 +113,8 @@ def _run_foreground(ws: Path, args: argparse.Namespace) -> int:
     model = args.model or cfg.model
     interval = args.interval if args.interval is not None else cfg.interval
     mode = args.mode or cfg.mode
+    max_attempts = args.max_attempts if args.max_attempts is not None else cfg.max_attempts
+    max_cost = args.max_cost if args.max_cost is not None else cfg.max_cost_usd
 
     state = _state_dir(ws)
     state.mkdir(parents=True, exist_ok=True)
@@ -131,7 +133,8 @@ def _run_foreground(ws: Path, args: argparse.Namespace) -> int:
     signal.signal(signal.SIGTERM, _sigterm)
 
     try:
-        Orchestrator(ws, model=model, interval=interval, mode=mode, log=log).run()
+        Orchestrator(ws, model=model, interval=interval, mode=mode,
+                 max_attempts=max_attempts, max_cost_usd=max_cost, log=log).run()
         return 0
     finally:
         _pid_path(ws).unlink(missing_ok=True)
@@ -150,6 +153,10 @@ def _run_background(ws: Path, args: argparse.Namespace) -> int:
         cmd += ["--model", args.model]
     if args.mode:
         cmd += ["--mode", args.mode]
+    if args.max_attempts is not None:
+        cmd += ["--max-attempts", str(args.max_attempts)]
+    if args.max_cost is not None:
+        cmd += ["--max-cost", str(args.max_cost)]
 
     boot_log = open(state / "boot.log", "w")
     proc = subprocess.Popen(
@@ -183,6 +190,18 @@ def cmd_status(args: argparse.Namespace) -> int:
     if attempts.is_dir():
         files = sorted(p.name for p in attempts.glob("[0-9][0-9][0-9].md"))
         print(f"Attempts recorded: {len(files)}" + (f" (latest {files[-1]})" if files else ""))
+
+    # Cumulative spend (tracked since the cost cap was added). Reading the
+    # checkpoint keeps this live even mid-attempt.
+    cp_path = _state_dir(ws) / "state.json"
+    if cp_path.exists():
+        import json
+        try:
+            total = json.loads(cp_path.read_text()).get("total_cost_usd")
+        except (json.JSONDecodeError, OSError):
+            total = None
+        if total:
+            print(f"Cumulative cost: ${total:.2f}")
     return 0
 
 
@@ -226,6 +245,12 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--mode", choices=("auto", "copilot"), default=None,
                        help="auto (default) or copilot, pause for approval each "
                             "attempt (overrides config.yaml)")
+    p_run.add_argument("--max-attempts", type=int, default=None,
+                       help="stop after this many attempts (overrides "
+                            "config.yaml; default unlimited)")
+    p_run.add_argument("--max-cost", type=float, default=None, dest="max_cost",
+                       help="stop once cumulative claude -p cost (USD) reaches "
+                            "this (overrides config.yaml; default unlimited)")
     p_run.set_defaults(func=cmd_run)
 
     p_status = sub.add_parser("status", help="show orchestrator status and attempt count")
