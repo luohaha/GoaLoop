@@ -63,13 +63,23 @@ class Orchestrator:
         model: str | None = None,
         interval: int = 30,
         mode: str = "auto",
+        max_attempts: int | None = None,
+        max_cost_usd: float | None = None,
         log: Callable[[str], None] = print,
     ):
         self.ws = workspace.resolve()
         self.model = model
         self.interval = interval  # pacing between successful `advanced` attempts
         self.mode = mode  # "auto" | "copilot" (pause for approval each attempt)
+        # Safety caps (None = unlimited). max_attempts bounds the highest
+        # attempt number; max_cost_usd bounds cumulative `claude -p` cost.
+        self.max_attempts = max_attempts
+        self.max_cost_usd = max_cost_usd
         self.log = log
+        # Persistent checkpoint dict (loaded in run()). Holds the active
+        # session + the cumulative counters (failures, retries, cost) so they
+        # survive an orchestrator restart, not just a single process lifetime.
+        self.cp: dict = {}
 
         self.state_dir = self.ws / ".goaloop"
         self.attempts_dir = self.ws / "attempts"
@@ -128,9 +138,26 @@ class Orchestrator:
                 pass
         return {}
 
-    def _save_checkpoint(self, **kw) -> None:
+    def _save_checkpoint(self) -> None:
+        """Persist the full checkpoint dict (self.cp) to disk."""
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.checkpoint_path.write_text(json.dumps(kw, indent=2))
+        self.checkpoint_path.write_text(json.dumps(self.cp, indent=2))
+
+    def _set_active(self, session_id: str, attempt: int,
+                    goal_mtime: float | None) -> None:
+        """Pin the active session + attempt and persist immediately, so a crash
+        mid-attempt leaves a recoverable breadcrumb. Counters/cost in self.cp
+        ride along (they persist across restarts, not just this process)."""
+        self.cp["active_session_id"] = session_id
+        self.cp["attempt"] = attempt
+        self.cp["goal_mtime"] = goal_mtime
+        self._save_checkpoint()
+
+    def _clear_active(self) -> None:
+        """Drop the active session (attempt finished) but KEEP the cumulative
+        counters/cost so they survive across attempts and restarts."""
+        self.cp["active_session_id"] = None
+        self._save_checkpoint()
 
     def _set_status(self, msg: str) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -139,7 +166,13 @@ class Orchestrator:
 
     def _mark_complete(self, attempt: int, status: str, cost: float | None) -> None:
         self.complete_path.write_text(json.dumps(
-            {"attempt": attempt, "status": status, "cost_usd": cost}, indent=2,
+            {
+                "attempt": attempt,
+                "status": status,
+                "cost_usd": cost,
+                "total_cost_usd": round(self.cp.get("total_cost_usd", 0.0), 6),
+            },
+            indent=2,
         ))
 
     def _end_error(self, attempt: int, reason: str) -> None:
@@ -154,7 +187,7 @@ class Orchestrator:
         """
         self._set_status(f"attempt {attempt:03d}: ERROR — {reason}. Loop ended.")
         self._mark_complete(attempt, "error", None)
-        self._save_checkpoint()  # clear active session
+        self._clear_active()
 
     def _suggestions_section(self) -> str:
         """Build the NEW-since-cursor block from suggestions.md, then advance
@@ -217,26 +250,55 @@ with a single line that is exactly one of these JSON objects:
     # ---- the loop ----------------------------------------------------
 
     def run(self) -> None:
-        cp = self._load_checkpoint()
-        # If a prior process died mid-attempt, resume that session — UNLESS
-        # goal.md was edited since the session started. A resumed session only
-        # gets "Continue." and never re-reads goal.md, so resuming across a
-        # goal change would silently keep running the OLD goal (it did, once).
-        # When the goal moved, drop the resume and start a fresh attempt that
-        # reads the new goal.
-        resume_session: str | None = cp.get("active_session_id")
-        active_goal_mtime: float | None = cp.get("goal_mtime")
-        if resume_session and active_goal_mtime != self._goal_mtime():
-            self.log(
-                f"[orchestrator] goal.md changed since session "
-                f"{resume_session[:8]} started — starting fresh, not resuming"
-            )
-            resume_session = None
-            active_goal_mtime = None
-        consecutive_failures = 0
+        self.cp = self._load_checkpoint()
+        # Cumulative counters persist across orchestrator restarts (Fix 5), so
+        # the 3-strike failure budget and the cost cap aren't silently reset by
+        # a `stop`/`run` cycle or a machine reboot.
+        self.cp.setdefault("consecutive_failures", 0)
+        self.cp.setdefault("transient_retries", 0)
+        self.cp.setdefault("total_cost_usd", 0.0)
+
+        # If a prior process died mid-attempt, resume that session — but only
+        # if goal.md hasn't moved (checked per-iteration below).
+        resume_session: str | None = self.cp.get("active_session_id")
+        active_goal_mtime: float | None = self.cp.get("goal_mtime")
 
         while True:
             n = self._next_attempt_number()
+
+            # Safety caps (Fix 4). Only block STARTING a fresh attempt — never
+            # interrupt an in-flight session (resume_session set), which is
+            # allowed to finish so we don't strand a long job mid-build.
+            if not resume_session:
+                if self.max_attempts and n > self.max_attempts:
+                    self._set_status(
+                        f"attempt cap reached ({self.max_attempts}) — loop ended."
+                    )
+                    self._mark_complete(n - 1, "exhausted", None)
+                    self._clear_active()
+                    return
+                if self.max_cost_usd and self.cp["total_cost_usd"] >= self.max_cost_usd:
+                    self._set_status(
+                        f"cost cap reached (${self.cp['total_cost_usd']:.2f} ≥ "
+                        f"${self.max_cost_usd:.2f}) — loop ended."
+                    )
+                    self._mark_complete(n - 1, "exhausted", None)
+                    self._clear_active()
+                    return
+
+            # If we're about to resume a session but goal.md changed since that
+            # session started, the resume would silently run the OLD goal — a
+            # resumed session only gets "Continue." and never re-reads goal.md
+            # (it did, once). Checked EVERY iteration so it also catches an edit
+            # made DURING a long in_progress/quota wait, not just one made while
+            # the process was down (Fix 2).
+            if resume_session and active_goal_mtime != self._goal_mtime():
+                self.log(
+                    f"[orchestrator] goal.md changed since session "
+                    f"{resume_session[:8]} started — starting fresh, not resuming"
+                )
+                resume_session = None
+                active_goal_mtime = None
 
             if resume_session:
                 session_id, resume = resume_session, True
@@ -249,9 +311,7 @@ with a single line that is exactly one of these JSON objects:
             # Persist the active session BEFORE the call so a crash leaves a
             # recoverable breadcrumb. goal_mtime travels with it so a restart
             # can detect a goal edit and refuse to resume a now-stale session.
-            self._save_checkpoint(
-                active_session_id=session_id, attempt=n, goal_mtime=active_goal_mtime,
-            )
+            self._set_active(session_id, n, active_goal_mtime)
             self._set_status(f"attempt {n:03d}: running")
 
             try:
@@ -267,37 +327,41 @@ with a single line that is exactly one of these JSON objects:
                 continue
             except TransientError as e:
                 resume_session = e.session_id
-                retries = cp.get("transient_retries", 0) + 1
-                cp["transient_retries"] = retries
-                if retries > TRANSIENT_MAX_RETRIES:
+                self.cp["transient_retries"] += 1
+                self._save_checkpoint()
+                if self.cp["transient_retries"] > TRANSIENT_MAX_RETRIES:
                     self._end_error(n, f"transient API errors exhausted "
                                        f"({TRANSIENT_MAX_RETRIES} retries)")
                     return
                 self._set_status(
-                    f"attempt {n:03d}: transient error (retry {retries}) — "
+                    f"attempt {n:03d}: transient error "
+                    f"(retry {self.cp['transient_retries']}) — "
                     f"resuming in {TRANSIENT_RETRY_SECS}s"
                 )
                 time.sleep(TRANSIENT_RETRY_SECS)
                 continue
             except Exception as e:  # noqa: BLE001 — record and bound retries
-                consecutive_failures += 1
+                self.cp["consecutive_failures"] += 1
+                self._save_checkpoint()
                 self._set_status(f"attempt {n:03d}: FAILED ({e})")
                 self._mark_complete(n, "error", None)
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    self._end_error(n, f"{consecutive_failures} consecutive failures "
-                                       f"(last: {e})")
+                if self.cp["consecutive_failures"] >= MAX_CONSECUTIVE_FAILURES:
+                    self._end_error(n, f"{self.cp['consecutive_failures']} consecutive "
+                                       f"failures (last: {e})")
                     return
                 resume_session = session_id
                 continue
 
-            cp["transient_retries"] = 0
+            self.cp["transient_retries"] = 0
+            if result.cost_usd:
+                self.cp["total_cost_usd"] += result.cost_usd
             term = _parse_terminator(result.text)
             status = term.get("status") if term else None
 
             if status == "pass":
                 self._set_status(f"attempt {n:03d}: PASS — goal met. Loop done.")
                 self._mark_complete(n, "pass", result.cost_usd)
-                self._save_checkpoint()  # clear active session
+                self._clear_active()
                 return
 
             # blocked — the Runner judges it cannot reach pass AND another
@@ -311,7 +375,7 @@ with a single line that is exactly one of these JSON objects:
                     f"attempt {n:03d}: BLOCKED — {reason}. Loop ended (needs human)."
                 )
                 self._mark_complete(n, "blocked", result.cost_usd)
-                self._save_checkpoint()  # clear active session
+                self._clear_active()
                 return
 
             # in_progress — the Runner deliberately paused to wait out a long
@@ -344,30 +408,32 @@ with a single line that is exactly one of these JSON objects:
                     f"attempt {n:03d}: in_progress — waiting {wait}s before "
                     f"resuming same session." + (f" ({note})" if note else "")
                 )
-                consecutive_failures = 0
+                self.cp["consecutive_failures"] = 0
+                self._save_checkpoint()
                 time.sleep(wait)
                 resume_session = session_id
                 continue
 
             # advanced — verify the Runner actually recorded the attempt.
             if not (self.attempts_dir / f"{n:03d}.md").exists() or status != "advanced":
-                consecutive_failures += 1
+                self.cp["consecutive_failures"] += 1
+                self._save_checkpoint()
                 reason = "no terminator" if status is None else (
                     "missing attempt record" if status == "advanced" else f"status={status}"
                 )
                 self._set_status(f"attempt {n:03d}: malformed ({reason})")
                 self._mark_complete(n, "no_output", result.cost_usd)
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    self._end_error(n, f"{consecutive_failures} consecutive malformed "
-                                       f"attempts (last: {reason})")
+                if self.cp["consecutive_failures"] >= MAX_CONSECUTIVE_FAILURES:
+                    self._end_error(n, f"{self.cp['consecutive_failures']} consecutive "
+                                       f"malformed attempts (last: {reason})")
                     return
                 resume_session = session_id
                 continue
 
             # Clean advance: next attempt starts fresh (no memory of this one).
-            consecutive_failures = 0
+            self.cp["consecutive_failures"] = 0
             resume_session = None
-            self._save_checkpoint()  # clear active session
+            self._clear_active()
             self._mark_complete(n, "advanced", result.cost_usd)
             if self.mode == "copilot":
                 self._wait_for_continue(n)  # block for human approval

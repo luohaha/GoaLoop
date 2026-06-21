@@ -6,9 +6,11 @@ values, which override these defaults. Anything domain-specific stays out
 of here — it belongs in `goal.md`.
 
 Recognized keys:
-  model     : model id passed to `claude -p` (default: CLI default / none)
-  interval  : seconds to pace between successful attempts (default 30)
-  mode      : "auto" (default) | "copilot" (pause for approval each attempt)
+  model        : model id passed to `claude -p` (default: CLI default / none)
+  interval     : seconds to pace between successful attempts (default 30)
+  mode         : "auto" (default) | "copilot" (pause for approval each attempt)
+  max_attempts : stop after this many attempts (default: unlimited)
+  max_cost_usd : stop once cumulative `claude -p` cost reaches this (default: unlimited)
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ class Config:
     model: str | None = None
     interval: int = DEFAULT_INTERVAL
     mode: str = "auto"
+    max_attempts: int | None = None
+    max_cost_usd: float | None = None
 
 
 def _parse_flat_yaml(text: str) -> dict[str, str]:
@@ -62,4 +66,14 @@ def load_config(workspace: Path) -> Config:
     mode = raw.get("mode", "").lower()
     if mode in VALID_MODES:
         cfg.mode = mode
+    if raw.get("max_attempts"):
+        try:
+            cfg.max_attempts = int(raw["max_attempts"])
+        except ValueError:
+            pass
+    if raw.get("max_cost_usd"):
+        try:
+            cfg.max_cost_usd = float(raw["max_cost_usd"])
+        except ValueError:
+            pass
     return cfg

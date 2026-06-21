@@ -15,6 +15,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import uuid
 from dataclasses import dataclass
 from typing import Callable, TextIO
@@ -107,9 +108,11 @@ class ClaudeAdapter:
 
         `session_id=None` mints a fresh uuid (the normal per-attempt case);
         pass one with `resume=True` to continue an interrupted session.
-        `stderr` is where the child's stderr goes (a log file handle, or
-        `subprocess.DEVNULL`); routing it away from a PIPE avoids the
-        pipe-buffer deadlock without needing a drain thread.
+        `stderr`: where the child's stderr goes. Default (None) captures it to
+        a temp file so quota / network errors that surface ONLY on stderr (or
+        as a non-zero exit with empty stdout) can still be classified; pass an
+        explicit handle (log file / DEVNULL) to override. Either way it's a
+        file, not a PIPE — no drain thread, no deadlock.
 
         Raises QuotaExhausted / TransientError for the two recoverable
         families, RuntimeError for a hard non-zero exit with no result.
@@ -122,12 +125,17 @@ class ClaudeAdapter:
 
         self.log(f"[runner] claude -p (session={session_id[:8]}, resume={resume})")
 
+        # Capture stderr ourselves (to a temp file, not a PIPE) when the caller
+        # didn't supply a destination, so it can feed error classification.
+        capture = tempfile.TemporaryFile(mode="w+") if stderr is None else None
+        child_stderr = capture if capture is not None else stderr
+
         proc = subprocess.Popen(
             args,
             cwd=self.cwd,
             env=env,
             stdout=subprocess.PIPE,
-            stderr=stderr if stderr is not None else subprocess.DEVNULL,
+            stderr=child_stderr,
             stdin=subprocess.DEVNULL,
             text=True,
             bufsize=1,
@@ -136,13 +144,32 @@ class ClaudeAdapter:
         result_text, cost, resume_secs = self._parse_stream(proc)
         self._wait_for_exit(proc)
 
-        if proc.returncode and not result_text:
-            raise RuntimeError(f"claude -p exited {proc.returncode} with no result")
+        stderr_text = ""
+        if capture is not None:
+            try:
+                capture.seek(0)
+                stderr_text = capture.read()
+            finally:
+                capture.close()
 
-        if result_text and _QUOTA_RE.search(result_text):
-            raise QuotaExhausted(result_text.strip()[:300])
-        if result_text and _TRANSIENT_RE.search(result_text):
-            raise TransientError(result_text.strip()[:300], session_id)
+        # Classify across BOTH streams. Real quota / network errors from
+        # `claude -p` often land ONLY on stderr (or come with an empty stdout
+        # result), so checking result_text alone would misread them as a hard
+        # failure and burn the loop's failure budget instead of waiting them
+        # out. These checks run BEFORE the empty-result RuntimeError for that
+        # reason.
+        blob = "\n".join(s for s in (result_text, stderr_text) if s)
+        if blob and _QUOTA_RE.search(blob):
+            raise QuotaExhausted(blob.strip()[:300])
+        if blob and _TRANSIENT_RE.search(blob):
+            raise TransientError(blob.strip()[:300], session_id)
+
+        if proc.returncode and not result_text:
+            detail = stderr_text.strip()[:200]
+            raise RuntimeError(
+                f"claude -p exited {proc.returncode} with no result"
+                + (f": {detail}" if detail else "")
+            )
 
         return ClaudeResult(
             text=result_text, session_id=session_id, cost_usd=cost,
