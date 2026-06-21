@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -230,6 +231,58 @@ def cmd_continue(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_install(args: argparse.Namespace) -> int:
+    """Deploy the bundled skills and Runner agent into ~/.claude.
+
+    Makes `/goal-init`, `/goal-run`, `/goal-flash` and the `goal-runner`
+    subagent available to every Claude Code session. The assets ship inside
+    the installed package (`resources/`), so this works from a `uv tool
+    install` / `pip install` with no source checkout.
+    """
+    resources = Path(__file__).resolve().parent / "resources"
+    claude = Path.home() / ".claude"
+
+    copied: list[str] = []
+    skipped: list[str] = []
+
+    def deploy(src: Path, dst: Path) -> None:
+        if dst.exists() and not args.force:
+            skipped.append(str(dst))
+            return
+        if dst.exists():
+            if dst.is_dir():
+                shutil.rmtree(dst)
+            else:
+                dst.unlink()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+        copied.append(str(dst))
+
+    skills_src = resources / "skills"
+    if skills_src.is_dir():
+        for skill in sorted(p for p in skills_src.iterdir() if p.is_dir()):
+            deploy(skill, claude / "skills" / skill.name)
+
+    agents_src = resources / "agents"
+    if agents_src.is_dir():
+        for agent in sorted(agents_src.glob("*.md")):
+            deploy(agent, claude / "agents" / agent.name)
+
+    for path in copied:
+        print(f"installed  {path}")
+    for path in skipped:
+        print(f"exists     {path}  (use --force to overwrite)")
+    if not copied and not skipped:
+        print("Nothing to install — no bundled resources found.", file=sys.stderr)
+        return 1
+    if copied:
+        print("\nDone. Open Claude Code and type /goal-init to verify.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="goaloop", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -264,6 +317,12 @@ def main(argv: list[str] | None = None) -> int:
     p_continue = sub.add_parser("continue", help="approve next attempt (copilot mode)")
     p_continue.add_argument("workspace")
     p_continue.set_defaults(func=cmd_continue)
+
+    p_install = sub.add_parser(
+        "install", help="deploy bundled skills + agent into ~/.claude")
+    p_install.add_argument("--force", action="store_true",
+                           help="overwrite existing skills/agents")
+    p_install.set_defaults(func=cmd_install)
 
     args = parser.parse_args(argv)
     return args.func(args)

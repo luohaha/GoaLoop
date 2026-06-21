@@ -2,8 +2,25 @@
 name = "goaloop"
 version = "0.1.0"
 description = "Goal-driven multi-attempt iteration loop driven by `claude -p`"
+readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "luohaha" }]
+keywords = ["claude", "claude-code", "agent", "automation", "iteration", "goal-driven"]
 dependencies = []  # stdlib only
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Build Tools",
+    "Operating System :: POSIX",
+]
+
+[project.urls]
+Homepage = "https://github.com/luohaha/GoaLoop"
+Repository = "https://github.com/luohaha/GoaLoop"
 
 [project.scripts]
 goaloop = "goaloop.cli:main"
@@ -14,3 +31,13 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["goaloop"]
+
+# `resources/agents` and `resources/skills` are symlinks to the repo's
+# top-level dirs (the single source of truth); setuptools copies their real
+# content into the wheel so an installed `goaloop` is self-contained.
+[tool.setuptools.package-data]
+goaloop = [
+    "resources/README.md",
+    "resources/agents/*.md",
+    "resources/skills/*/*.md",
+]

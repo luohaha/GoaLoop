@@ -57,37 +57,37 @@ verification passes.
 
 ## Install
 
-Two pieces: the `goaloop` CLI (the orchestrator), and the Claude Code
-skills (the Manager front-end).
-
-**1. Install the `goaloop` CLI** (stdlib-only, Python ≥ 3.10):
-
-```bash
-git clone <repo-url> ~/GoaLoop
-pip install -e ~/GoaLoop          # provides the `goaloop` command
-# or run without installing:  python3 -m goaloop ...  (from ~/GoaLoop)
-```
-
-The CLI reads the Runner's system prompt from `~/GoaLoop/agents/goal-runner.md`
-(set `GOALOOP_RUNNER_PROMPT` to override). It shells out to `claude`, so the
-Claude Code CLI must be on your `PATH` and authenticated.
-
-**2. Install the skills** — either local to one project:
+Two pieces, two commands: install the `goaloop` CLI (the orchestrator),
+then deploy the Claude Code skills (the Manager front-end). Both ship in
+the package — no source checkout needed.
 
 ```bash
-cd ~/your-working-project && mkdir -p .claude
-ln -s ~/GoaLoop/skills .claude/skills
+uv tool install goaloop      # provides the `goaloop` command (stdlib-only, Python ≥ 3.10)
+goaloop install              # deploys /goal-init, /goal-run, /goal-flash + the goal-runner agent into ~/.claude
 ```
 
-…or globally for all CC sessions:
+`uvx goaloop ...` works too if you prefer not to install persistently;
+`pip install goaloop` is equivalent if you don't use uv. The Runner's
+system prompt ships inside the package (override with
+`GOALOOP_RUNNER_PROMPT`). The CLI shells out to `claude`, so the Claude
+Code CLI must be on your `PATH` and authenticated.
+
+`goaloop install` skips any skill/agent that already exists; pass
+`--force` to overwrite. Verify by opening Claude Code and typing
+`/goal-init` — it should be recognized. (You can also drive the
+orchestrator entirely from the shell with `goaloop run`, skipping the
+skills.)
+
+<details>
+<summary>From source (development)</summary>
 
 ```bash
-mkdir -p ~/.claude/skills && cp -r ~/GoaLoop/skills/* ~/.claude/skills/
+git clone https://github.com/luohaha/GoaLoop ~/GoaLoop
+uv pip install -e ~/GoaLoop      # or: pip install -e ~/GoaLoop
+goaloop install                  # same skill/agent deploy as above
+# run without installing:  python3 -m goaloop ...  (from ~/GoaLoop)
 ```
-
-Verify by opening Claude Code and typing `/goal-init` — it should be
-recognized. (You can also drive the orchestrator entirely from the shell
-with `goaloop run`, skipping the skills.)
+</details>
 
 ## Quickstart
 
