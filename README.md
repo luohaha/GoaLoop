@@ -270,6 +270,16 @@ Claude `/goal` sits between Codex's self-audit and GoaLoop's executable
 gate. See [`docs/comparison-claude-goal.md`](docs/comparison-claude-goal.md)
 for the full side-by-side.
 
+The closest competitor on verification independence is the
+[pi](https://github.com/earendil-works/pi) agent's `pi-goal-x` extension:
+it spawns an **independent auditor** (a separate agent with read-only tools)
+that inspects the real workspace — but only **once, when the agent claims
+completion**, and as a semantic LLM verdict. GoaLoop makes the same kind of
+independent verification the **entrance gate of every attempt**, with a
+deterministic, mandatory check and a disposable executor. See
+[`docs/comparison-pi-goal.md`](docs/comparison-pi-goal.md) for the full
+side-by-side (and a note on the several pi goal extensions).
+
 ## Status
 
 v0.1. The `goaloop` loop, CLI, and skills are implemented and pass an
