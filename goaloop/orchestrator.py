@@ -411,15 +411,17 @@ def _parse_terminator(text: str) -> dict | None:
 def _runner_system_prompt() -> str:
     """The Runner instructions, used as --append-system-prompt.
 
-    Single source of truth is `agents/goal-runner.md` in the repo; its YAML
-    frontmatter is stripped. Override with GOALOOP_RUNNER_PROMPT if the file
-    is not co-located with the package.
+    Single source of truth is `agents/goal-runner.md` in the repo, shipped
+    inside the package at `resources/agents/goal-runner.md` (a symlink in the
+    source tree, a real copy in the installed wheel) so an installed `goaloop`
+    is self-contained. Its YAML frontmatter is stripped. Override with
+    GOALOOP_RUNNER_PROMPT to point elsewhere.
     """
     import os
 
     override = os.environ.get("GOALOOP_RUNNER_PROMPT")
     path = Path(override) if override else (
-        Path(__file__).resolve().parents[1] / "agents" / "goal-runner.md"
+        Path(__file__).resolve().parent / "resources" / "agents" / "goal-runner.md"
     )
     text = path.read_text()
     if text.startswith("---"):
