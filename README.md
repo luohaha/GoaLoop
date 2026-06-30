@@ -4,8 +4,8 @@
 
 <h1 align="center">GoaLoop</h1>
 
-> A goal-driven multi-attempt iteration framework — a Ralph loop over
-> `claude -p`, with just enough structure to be safe.
+> The discipline layer for loop engineering — turn "iterate until it's
+> right" into a verifiable protocol over `claude -p`.
 
 GoaLoop turns "iterate until the target is met" into a small, sharp
 protocol on top of Claude Code. You write a `goal.md` that spells out
@@ -38,6 +38,12 @@ Existing tools for this pattern tend to bake in domain assumptions like
 "artifact = GitHub PR" and "isolation = git worktree". GoaLoop makes no
 domain assumptions — your `goal.md` and its verification scripts carry
 all the domain knowledge.
+
+Writing a loop is trivial; making it *trustworthy* is not. The goal is
+for GoaLoop to be the foundational framework for **loop engineering** —
+the place where ad-hoc "keep trying until it works" scripts become an
+engineered protocol: goal-defined, independently verified, resumable,
+and safe to leave running unattended.
 
 See [`docs/design.md`](docs/design.md) for the full design and
 rationale.
