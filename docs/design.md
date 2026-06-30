@@ -1,7 +1,8 @@
 # GoaLoop — Design Document
 
-> **One-sentence definition.** GoaLoop is a goal-driven multi-attempt
-> iteration framework: a thin Manager (the user's Claude Code session,
+> **One-sentence definition.** GoaLoop is the discipline layer for loop
+> engineering — a goal-driven multi-attempt iteration framework: a thin
+> Manager (the user's Claude Code session,
 > driven by skills) launches a small background orchestrator, the
 > orchestrator runs each attempt as a fresh `claude -p` Runner that executes
 > the verification procedure spelled out in `goal.md` plus one unit of work
