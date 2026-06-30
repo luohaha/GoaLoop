@@ -5,7 +5,7 @@
 <h1 align="center">GoaLoop</h1>
 
 > The discipline layer for loop engineering — turn "iterate until it's
-> right" into a verifiable protocol over `claude -p`.
+> right" into a verifiable protocol.
 
 GoaLoop turns "iterate until the target is met" into a small, sharp
 protocol on top of Claude Code. You write a `goal.md` that spells out
