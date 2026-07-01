@@ -11,6 +11,11 @@ Recognized keys:
   mode         : "auto" (default) | "copilot" (pause for approval each attempt)
   max_attempts : stop after this many attempts (default: unlimited)
   max_cost_usd : stop once cumulative `claude -p` cost reaches this (default: unlimited)
+  job_cleanup_pattern : substring matched against process cmdlines; if set, `stop`
+                 reaps (and `run` clears stray) processes whose cmdline contains it.
+                 Use when the Runner launches long jobs detached (setsid/nohup) that
+                 escape the orchestrator's process group and would otherwise survive
+                 `stop` and pile up across restarts (default: unset / disabled).
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ class Config:
     mode: str = "auto"
     max_attempts: int | None = None
     max_cost_usd: float | None = None
+    job_cleanup_pattern: str | None = None
 
 
 def _parse_flat_yaml(text: str) -> dict[str, str]:
@@ -76,4 +82,6 @@ def load_config(workspace: Path) -> Config:
             cfg.max_cost_usd = float(raw["max_cost_usd"])
         except ValueError:
             pass
+    if raw.get("job_cleanup_pattern"):
+        cfg.job_cleanup_pattern = raw["job_cleanup_pattern"]
     return cfg
