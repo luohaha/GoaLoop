@@ -90,6 +90,42 @@ def _terminate(pid: int) -> None:
         pass
 
 
+def _reap_job_processes(pattern: str, exclude: set[int]) -> int:
+    """Best-effort SIGTERM to processes whose cmdline contains `pattern`.
+
+    The Runner may launch long jobs detached (setsid/nohup) so they survive its
+    own pause/resume between attempts. Those escape the orchestrator's process
+    group, so `_terminate`'s killpg cannot reach them — they outlive `stop` and
+    pile up across restarts. When the operator opts in via config
+    `job_cleanup_pattern`, `stop` reaps and `run` clears such strays. A Linux
+    /proc scan keeps GoaLoop stdlib-only; the operator owns the pattern's
+    specificity (match it narrowly, e.g. the job's module name).
+    """
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return 0
+    exclude = exclude | {os.getpid()}
+    reaped = 0
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid in exclude:
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        cmdline = raw.replace(b"\0", b" ").decode("utf-8", "replace")
+        if pattern in cmdline:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                reaped += 1
+            except OSError:
+                pass
+    return reaped
+
+
 # ---- commands --------------------------------------------------------
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -102,6 +138,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"Orchestrator already running (PID {pid}). Use `goaloop stop {args.workspace}` first.",
               file=sys.stderr)
         return 1
+
+    # Clear strays a prior run left behind (detached jobs escape stop's killpg).
+    pattern = load_config(ws).job_cleanup_pattern
+    if pattern and (n := _reap_job_processes(pattern, exclude=set())):
+        print(f"Cleared {n} stray job process(es) matching '{pattern}' from a prior run.")
 
     if args.foreground:
         return _run_foreground(ws, args)
@@ -209,12 +250,20 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_stop(args: argparse.Namespace) -> int:
     ws = _resolve_workspace(args.workspace)
     pid = _running_pid(ws)
-    if pid is None:
+    if pid is not None:
+        print(f"Sending SIGTERM to orchestrator (PID {pid})…")
+        _terminate(pid)
+        print("Stop signal sent; the orchestrator and its Runner subprocess will exit shortly.")
+    else:
         print("Not running.")
-        return 0
-    print(f"Sending SIGTERM to orchestrator (PID {pid})…")
-    _terminate(pid)
-    print("Stop signal sent; the orchestrator and its Runner subprocess will exit shortly.")
+
+    # Reap detached jobs the Runner launched (they escape the orchestrator's
+    # process group, so killpg above cannot reach them). Opt-in via config.
+    pattern = load_config(ws).job_cleanup_pattern
+    if pattern:
+        n = _reap_job_processes(pattern, exclude={pid} if pid else set())
+        if n:
+            print(f"Reaped {n} detached job process(es) matching '{pattern}'.")
     return 0
 
 
