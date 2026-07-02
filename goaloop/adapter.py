@@ -24,8 +24,9 @@ from typing import Callable, TextIO
 # Result text that means the account hit its API quota / rate limit. The
 # loop responds by sleeping for a cool-down and resuming the same session.
 _QUOTA_RE = re.compile(
-    r"hit your limit|rate limit|quota exceeded|too many requests|"
-    r"overloaded|resets \d+[ap]m",
+    r"hit your (?:\w+ )?limit|(?:session|usage) limit|rate limit|"
+    r"quota exceeded|too many requests|overloaded|"
+    r"resets \d{1,2}(?::\d{2})?\s*[ap]m",
     re.IGNORECASE,
 )
 
