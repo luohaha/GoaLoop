@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -23,8 +24,9 @@ from typing import Callable, TextIO
 # Result text that means the account hit its API quota / rate limit. The
 # loop responds by sleeping for a cool-down and resuming the same session.
 _QUOTA_RE = re.compile(
-    r"hit your limit|rate limit|quota exceeded|too many requests|"
-    r"overloaded|resets \d+[ap]m",
+    r"hit your (?:\w+ )?limit|(?:session|usage) limit|rate limit|"
+    r"quota exceeded|too many requests|overloaded|"
+    r"resets \d{1,2}(?::\d{2})?\s*[ap]m",
     re.IGNORECASE,
 )
 
@@ -120,6 +122,16 @@ class ClaudeAdapter:
         if session_id is None:
             session_id = str(uuid.uuid4())
         args = self._build_args(prompt, session_id, resume)
+        # Resolve `claude` to an absolute path so a quirky PATH at spawn time
+        # doesn't cause a spurious FileNotFoundError, and re-resolve every turn
+        # so an in-place auto-update is picked up. If it can't be found, treat
+        # that as transient (the binary is briefly absent while Claude Code
+        # auto-updates in place) — a backoff retry recovers; a genuinely missing
+        # binary just exhausts the transient budget with a clear message,
+        # instead of instantly burning the generic 3-strike failure budget.
+        resolved = shutil.which(args[0])
+        if resolved:
+            args[0] = resolved
         env = dict(os.environ)
         env.pop("CLAUDECODE", None)  # drop nested-session guard
 
@@ -130,16 +142,21 @@ class ClaudeAdapter:
         capture = tempfile.TemporaryFile(mode="w+") if stderr is None else None
         child_stderr = capture if capture is not None else stderr
 
-        proc = subprocess.Popen(
-            args,
-            cwd=self.cwd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=child_stderr,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
+        try:
+            proc = subprocess.Popen(
+                args,
+                cwd=self.cwd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=child_stderr,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+        except FileNotFoundError as e:
+            raise TransientError(
+                f"claude executable not found ({args[0]!r}) — likely a transient "
+                f"auto-update; will back off and retry: {e}", session_id) from e
 
         result_text, cost, resume_secs = self._parse_stream(proc)
         self._wait_for_exit(proc)
