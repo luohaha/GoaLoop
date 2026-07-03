@@ -33,6 +33,12 @@ QUOTA_RETRY_SECS = 900
 TRANSIENT_RETRY_SECS = 10
 TRANSIENT_MAX_RETRIES = 3
 
+# Short backoff before re-spawning after a malformed attempt (no/garbled
+# terminator). Without it, three malformed turns can burn the whole strike
+# budget in seconds when the underlying cause fails fast (e.g. a limit notice
+# that returns instantly) — a brief pause gives such a condition room to clear.
+MALFORMED_RETRY_SECS = 10
+
 # When a Runner pauses mid-attempt (`in_progress`) to wait out a long
 # job it would otherwise poll in a live turn, it tells us how long to
 # wait. Cap it so a too-optimistic hint can't starve forward progress;
@@ -395,6 +401,7 @@ with a single line that is exactly one of these JSON objects:
                     self._end_error(n, f"{self.cp['consecutive_failures']} consecutive "
                                        f"malformed attempts (last: {reason})")
                     return
+                time.sleep(MALFORMED_RETRY_SECS)
                 resume_session = session_id
                 continue
 

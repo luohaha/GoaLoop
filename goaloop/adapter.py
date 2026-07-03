@@ -39,6 +39,46 @@ _TRANSIENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# High-precision Claude Code usage-limit notice, used to scan the Runner's
+# ASSISTANT text (not just result/stderr). When a turn is aborted mid-flight
+# by the session/usage limit, Claude Code emits "You've hit your session limit
+# · resets 3:10pm" as an assistant text block and the `result` field comes back
+# empty — so a quota scan over result+stderr alone misses it and the loop
+# misreads a recoverable pause as a "malformed" attempt. We can't scan
+# assistant text with the broad _QUOTA_RE, because words like "overloaded" or
+# "too many requests" legitimately appear in a Runner's own analysis; these two
+# phrasings are specific to Claude Code's limit notice and won't.
+_USAGE_LIMIT_RE = re.compile(
+    r"hit your (?:\w+ )?limit|resets \d{1,2}(?::\d{2})?\s*[ap]m",
+    re.IGNORECASE,
+)
+
+
+def _classify_streams(
+    result_text: str, stderr_text: str, assistant_text: str, session_id: str
+) -> Exception | None:
+    """Map the child's output to a recoverable-error exception, or None.
+
+    `result_text` + `stderr_text` get the full quota/transient patterns (these
+    streams carry real API errors verbatim). `assistant_text` is scanned ONLY
+    for the high-precision usage-limit notice (_USAGE_LIMIT_RE) — the one error
+    Claude Code surfaces there rather than in `result` — so a broad scan of
+    free-form analysis text can't misfire into a false quota/transient pause.
+    """
+    primary = "\n".join(s for s in (result_text, stderr_text) if s)
+    if primary and _QUOTA_RE.search(primary):
+        return QuotaExhausted(primary.strip()[:300])
+    if primary and _TRANSIENT_RE.search(primary):
+        return TransientError(primary.strip()[:300], session_id)
+    if assistant_text and _USAGE_LIMIT_RE.search(assistant_text):
+        # Surface the matched line, not the whole (possibly long) analysis.
+        line = next(
+            (ln for ln in assistant_text.splitlines() if _USAGE_LIMIT_RE.search(ln)),
+            assistant_text,
+        )
+        return QuotaExhausted(line.strip()[:300])
+    return None
+
 
 class QuotaExhausted(Exception):
     """API quota / rate limit hit; the loop waits and resumes."""
@@ -158,7 +198,7 @@ class ClaudeAdapter:
                 f"claude executable not found ({args[0]!r}) — likely a transient "
                 f"auto-update; will back off and retry: {e}", session_id) from e
 
-        result_text, cost, resume_secs = self._parse_stream(proc)
+        result_text, cost, resume_secs, assistant_text = self._parse_stream(proc)
         self._wait_for_exit(proc)
 
         stderr_text = ""
@@ -169,17 +209,15 @@ class ClaudeAdapter:
             finally:
                 capture.close()
 
-        # Classify across BOTH streams. Real quota / network errors from
-        # `claude -p` often land ONLY on stderr (or come with an empty stdout
-        # result), so checking result_text alone would misread them as a hard
-        # failure and burn the loop's failure budget instead of waiting them
-        # out. These checks run BEFORE the empty-result RuntimeError for that
-        # reason.
-        blob = "\n".join(s for s in (result_text, stderr_text) if s)
-        if blob and _QUOTA_RE.search(blob):
-            raise QuotaExhausted(blob.strip()[:300])
-        if blob and _TRANSIENT_RE.search(blob):
-            raise TransientError(blob.strip()[:300], session_id)
+        # Classify across ALL streams. Real quota / network errors from
+        # `claude -p` often land ONLY on stderr, or (for the session/usage
+        # limit) ONLY in an assistant text block with an empty `result` — so
+        # checking result_text alone would misread them as a hard failure and
+        # burn the loop's failure budget instead of waiting them out. This runs
+        # BEFORE the empty-result RuntimeError for that reason.
+        err = _classify_streams(result_text, stderr_text, assistant_text, session_id)
+        if err is not None:
+            raise err
 
         if proc.returncode and not result_text:
             detail = stderr_text.strip()[:200]
@@ -195,17 +233,20 @@ class ClaudeAdapter:
 
     def _parse_stream(
         self, proc: subprocess.Popen
-    ) -> tuple[str, float | None, int | None]:
+    ) -> tuple[str, float | None, int | None, str]:
         """Read stream-json JSONL, log progress.
 
-        Returns (result_text, cost, requested_resume_secs). The last value is
-        the `delaySeconds` of the final ScheduleWakeup tool call this turn (or
-        None) — the orchestrator uses it to treat a tool-call pause as
-        in_progress.
+        Returns (result_text, cost, requested_resume_secs, assistant_text).
+        `requested_resume_secs` is the `delaySeconds` of the final ScheduleWakeup
+        tool call this turn (or None) — the orchestrator uses it to treat a
+        tool-call pause as in_progress. `assistant_text` is every assistant text
+        block joined, so error classification can catch a usage-limit notice
+        that Claude Code emits there (with an empty `result`) on an aborted turn.
         """
         result_text = ""
         cost: float | None = None
         requested_resume_secs: int | None = None
+        assistant_chunks: list[str] = []
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.strip()
@@ -226,6 +267,7 @@ class ClaudeAdapter:
                         if block.get("type") == "text":
                             text = block.get("text", "").strip()
                             if text:
+                                assistant_chunks.append(text)
                                 self.log(f"[runner] {_clip(text, 500)}")
                         elif block.get("type") == "tool_use":
                             name = block.get("name", "?")
@@ -249,7 +291,7 @@ class ClaudeAdapter:
                 # side effects settle, which would otherwise block the stdout
                 # iterator indefinitely on a long, tool-heavy attempt.
                 break
-        return result_text, cost, requested_resume_secs
+        return result_text, cost, requested_resume_secs, "\n".join(assistant_chunks)
 
     @staticmethod
     def _wait_for_exit(proc: subprocess.Popen, timeout: float = 10.0) -> None:
