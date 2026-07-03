@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "luohaha" }]
 keywords = ["claude", "claude-code", "agent", "automation", "iteration", "goal-driven"]
-dependencies = []  # stdlib only
+dependencies = ["python-dotenv>=1.0"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
