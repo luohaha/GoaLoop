@@ -332,7 +332,31 @@ def cmd_install(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_env_file(path: Path = Path.home() / ".goaloop-telemetry.env") -> None:
+    """Load KEY=VALUE lines from an env file into os.environ so the detached
+    orchestrator (and, via adapter.py's dict(os.environ), every claude Runner)
+    inherit them. Supports optional leading ``export`` and quoted values.
+    Existing env vars are NOT overridden, so an explicit shell export still wins.
+    """
+    if not path.is_file():
+        return
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        key, sep, val = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, val)
+
+
 def main(argv: list[str] | None = None) -> int:
+    _load_env_file()
     parser = argparse.ArgumentParser(prog="goaloop", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
