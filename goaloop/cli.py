@@ -332,7 +332,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_env_file(path: Path = Path.home() / ".goaloop-telemetry.env") -> None:
+def _load_env_file(path: Path = Path.home() / ".goaloop.env") -> None:
     """Load an optional env file into os.environ so the detached orchestrator
     (and, via adapter.py's dict(os.environ), every claude Runner) inherit it —
     e.g. CLAUDE_CODE_ENABLE_TELEMETRY and OTEL_*. Existing env vars are not
