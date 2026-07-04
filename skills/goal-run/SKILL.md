@@ -153,9 +153,12 @@ durable guidance channels, by intent serving different purposes.
   reads the updated spec naturally — no relay needed. Propose the edit,
   make it on the user's confirmation; no restart required.
 - **Transient per-attempt note**: the Runner of attempt NNN reads
-  `~/.goaloop/<name>/suggestions/NNN.md` at the start of that attempt. So
-  write the note there, targeting the round that will read it: check
-  `goaloop status` for the current attempt and write the NEXT number — if
+  `~/.goaloop/<name>/suggestions/NNN.md` at the start of that attempt.
+  **Simplest — let the CLI number it: `goaloop suggest <name> "your note"`**
+  (or `--file <path>`) writes the correctly-numbered file(s) for you, including
+  the running-attempt/retry case, so a mis-numbered note can't silently sit
+  unread. To do it by hand instead: check `goaloop status` for the current
+  attempt and write the NEXT number — if
   attempt 005 is running, write `suggestions/006.md`. The file stays in place
   afterward as an audit trail (parallel to `attempts/NNN.md`). Use this for
   one-off nudges (e.g. dropped while AFK); `goal.md` is for changes that

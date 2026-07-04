@@ -280,6 +280,70 @@ def cmd_continue(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_suggest(args: argparse.Namespace) -> int:
+    """Drop a transient nudge into the correct suggestions/NNN.md — the file the
+    NEXT attempt will actually read — so you never hand-compute the number (a
+    mis-numbered note silently sits unread). Use goal.md for durable spec changes.
+
+    Numbering: attempts/NNN.md is written only when an attempt COMPLETES, so a
+    running attempt is `highest+1` and has left no file yet, and it already loaded
+    its context (it won't re-read mid-flight). So when an attempt is in-flight the
+    next fresh reader is N+1; we also drop N for retry-safety (a failed attempt
+    reruns the same number with a fresh session). When idle, the next attempt to
+    start is highest+1.
+    """
+    ws = _resolve_workspace(args.workspace)
+    if not (ws / "goal.md").exists():
+        print(f"No goal.md under {ws} — is this a goaloop workspace?", file=sys.stderr)
+        return 1
+
+    text = args.file and Path(args.file).expanduser().read_text() or " ".join(args.text or [])
+    if not text.strip():
+        print("Nothing to write (provide TEXT or --file).", file=sys.stderr)
+        return 1
+
+    highest = 0
+    attempts = ws / "attempts"
+    if attempts.is_dir():
+        for p in attempts.glob("[0-9][0-9][0-9].md"):
+            highest = max(highest, int(p.stem))
+
+    inflight = None
+    status_path = _state_dir(ws) / "status.txt"
+    if status_path.exists():
+        import re
+        m = re.search(r"attempt\s+0*(\d+):\s*(\w+)", status_path.read_text())
+        if m and m.group(2) in ("running", "in_progress"):
+            inflight = int(m.group(1))
+
+    if inflight is not None:
+        targets = sorted({inflight, inflight + 1})
+        primary = inflight + 1
+    else:
+        targets = [highest + 1]
+        primary = highest + 1
+
+    sug = ws / "suggestions"
+    sug.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    written = []
+    for n in targets:
+        f = sug / f"{n:03d}.md"
+        newfile = not f.exists() or f.stat().st_size == 0
+        with f.open("a") as fh:
+            if newfile:
+                fh.write(f"# Suggestions for attempt {n}\n")
+            fh.write(f"\n<!-- added {stamp} -->\n{text.rstrip()}\n")
+        written.append(f.name)
+
+    note = ""
+    if inflight is not None:
+        note = f" (also dropped {inflight:03d}.md for retry-safety; attempt {inflight} is in-flight and won't re-read mid-run)"
+    print(f"Wrote nudge to suggestions/{', '.join(written)}. "
+          f"Next fresh attempt to read it: {primary:03d}.{note}")
+    return 0
+
+
 def cmd_install(args: argparse.Namespace) -> int:
     """Deploy the bundled skills and Runner agent into ~/.claude.
 
@@ -379,6 +443,16 @@ def main(argv: list[str] | None = None) -> int:
     p_continue = sub.add_parser("continue", help="approve next attempt (copilot mode)")
     p_continue.add_argument("workspace")
     p_continue.set_defaults(func=cmd_continue)
+
+    p_suggest = sub.add_parser(
+        "suggest",
+        help="drop a transient nudge the next attempt will read (auto-numbered)",
+    )
+    p_suggest.add_argument("workspace", help="workspace name (~/.goaloop/<name>) or path")
+    p_suggest.add_argument("text", nargs="*", help="the nudge text (or use --file)")
+    p_suggest.add_argument("--file", default=None,
+                           help="read the nudge from a file instead of TEXT args")
+    p_suggest.set_defaults(func=cmd_suggest)
 
     p_install = sub.add_parser(
         "install", help="deploy bundled skills + agent into ~/.claude")

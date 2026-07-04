@@ -132,8 +132,9 @@ After writing, tell the user:
 - (Optional, no action needed at init) the workspace may also hold a
   `config.yaml` (flat keys `model` / `interval` / `mode: auto|copilot`)
   to set run defaults, and a `suggestions/` directory where the manager can
-  drop async per-attempt note files mid-run (the Runner of attempt NNN reads
-  `suggestions/NNN.md`); `goal.md` remains the place for permanent changes.
+  drop async per-attempt notes mid-run (the Runner of attempt NNN reads
+  `suggestions/NNN.md`; use `goaloop suggest <name> "…"` to auto-number them
+  correctly); `goal.md` remains the place for permanent changes.
 
 Encourage them to read and tweak `goal.md` before kicking off — it's
 the load-bearing artifact of the whole framework.
