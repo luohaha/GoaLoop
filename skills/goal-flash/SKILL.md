@@ -115,9 +115,10 @@ rather than interviewing for it:
   `goaloop status <name>` or `tail -f <workspace>/.goaloop/orchestrator.log`.
 - **The inferred goal.md is the steering wheel and is mutable mid-run.** If
   the inference was off, edit `<workspace>/goal.md` (esp. Verification) — the
-  next attempt picks it up. For a transient nudge, drop a note file the next
-  attempt will read — `suggestions/<next-attempt>.md`, named per the convention
-  `/goal-run` describes (check `goaloop status` for the round). Halt with
+  next attempt picks it up. For a transient nudge, run
+  `goaloop suggest <name> "your note"` (or `--file <path>`) — it writes the
+  correctly-numbered `suggestions/NNN.md` for you (handling the running-attempt
+  and retry cases), so a mis-numbered note can't silently sit unread. Halt with
   `goaloop stop <name>`.
 
 From here, progress relay is identical to `/goal-run` — read
