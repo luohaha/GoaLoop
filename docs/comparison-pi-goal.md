@@ -20,8 +20,8 @@ to GoaLoop's externally-verified gate, and the most instructive contrast.
 > verification contracts), with
 > [`code-yeongyu/pi-goal`](https://github.com/code-yeongyu/pi-goal) and
 > [`Michaelliv/pi-goal`](https://github.com/Michaelliv/pi-goal) as the
-> Codex-style variants. GoaLoop is the Python package + skills +
-> `agents/goal-runner.md` in this repo; see [`design.md`](design.md). See
+> Codex-style variants. GoaLoop is the Python package + the `/goal-flash`
+> skill + `agents/goal-runner.md` in this repo; see [`design.md`](design.md). See
 > also the sibling comparisons against
 > [Codex](comparison-codex.md) and [Claude Code `/goal`](comparison-claude-goal.md).
 
@@ -54,7 +54,7 @@ actually moves off the self-audit position.
 | State store | `.pi/goals/` under the session; in-memory auditor session | Files on disk (`goal.md`, `memory/`, `attempts/`, `.goaloop/`) — durable audit trail |
 | Budget enforcement | Token budget (default ~200k) → `budgetLimited` | None enforced; reads each attempt's reported cost only |
 | Survives session close | No — in-process, tied to the session | Yes — the orchestrator is detached and keeps iterating |
-| Verification optional? | Yes — contracts can be disabled (`disableContracts` / `PI_GOAL_DISABLE_CONTRACTS=1`) | No — `/goal-init` refuses to write `goal.md` without a concrete check |
+| Verification optional? | Yes — contracts can be disabled (`disableContracts` / `PI_GOAL_DISABLE_CONTRACTS=1`) | No — `/goal-flash` refuses to write `goal.md` without a concrete check |
 
 One line: **`pi-goal-x` makes the independent auditor a final quality
 inspector — invoked once when the agent claims done; GoaLoop makes the
@@ -74,8 +74,8 @@ spawns an **independent auditor** (a separate pi agent) to inspect the
 workspace and approve or reject before the goal is archived. Multiple
 goals live in `.pi/goals/`; `/goal-focus` switches the active one.
 
-**GoaLoop.** A user writes a `goal.md` (via the `/goal-init` interview or
-`/goal-flash` one-shot) that spells out the objective, hard constraints,
+**GoaLoop.** A user writes a `goal.md` (via the `/goal-flash` one-shot, or
+by hand) that spells out the objective, hard constraints,
 and — crucially — a concrete **Verification** procedure. A detached
 Python orchestrator then spawns one fresh `claude -p` **Runner** per
 attempt: it reads the workspace, runs the Verification, does one unit of

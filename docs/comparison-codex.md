@@ -14,7 +14,7 @@ since that's where the designs diverge most.
 > Reference points: Codex's feature lives in `codex-rs/ext/goal/`
 > (Rust, compiled into the agent) plus `codex-rs/state/...goals.rs`
 > (SQLite) and `codex-rs/prompts/.../goals/*.md` (steering prompts).
-> GoaLoop is the Python package + skills + `agents/goal-runner.md` in
+> GoaLoop is the Python package + the `/goal-flash` skill + `agents/goal-runner.md` in
 > this repo; see [`design.md`](design.md).
 
 ## TL;DR
@@ -45,8 +45,8 @@ done by calling `update_goal(status="complete")`, or gives up with
 `update_goal(status="blocked")`. Three tools total: `create_goal`,
 `get_goal`, `update_goal`.
 
-**GoaLoop.** A user writes a `goal.md` (via the `/goal-init` interview or
-`/goal-flash` one-shot) that spells out the objective, hard constraints,
+**GoaLoop.** A user writes a `goal.md` (via the `/goal-flash` one-shot, or
+by hand) that spells out the objective, hard constraints,
 and — crucially — a concrete **Verification** procedure. A detached
 Python orchestrator then spawns one fresh `claude -p` **Runner** per
 attempt: it reads the workspace, runs the Verification, does one unit of
@@ -131,7 +131,7 @@ pass/fail convention. "Verification" is entirely the natural-language
 model to be honest with itself.
 
 **GoaLoop makes verification a literal, executable procedure, mandatory at
-init.** `/goal-init` is a hard gate:
+init.** `/goal-flash` is a hard gate:
 
 > Acceptable: "run `./scripts/foo.sh` and check exit code", "parse
 > `metrics.p99` from result.json and compare against 5.0", "score
@@ -239,6 +239,6 @@ concrete check up front.
 **GoaLoop** (this repo):
 - [`design.md`](design.md) — full design and rationale
 - `agents/goal-runner.md` — the Runner system prompt (verification procedure)
-- `skills/goal-init/SKILL.md` — the strict verification-rigor gate
+- `skills/goal-flash/SKILL.md` — the single entry point + strict verification-rigor gate
 - `goaloop/orchestrator.py` — the attempt loop and terminator handling
 - `goaloop/adapter.py` — the `claude -p` subprocess adapter

@@ -14,7 +14,7 @@ since that's where the designs diverge most.
 > Reference points: Claude Code's feature is documented at
 > [code.claude.com/docs/en/goal](https://code.claude.com/docs/en/goal);
 > it is implemented as a session-scoped, prompt-based **Stop hook**.
-> GoaLoop is the Python package + skills + `agents/goal-runner.md` in
+> GoaLoop is the Python package + the `/goal-flash` skill + `agents/goal-runner.md` in
 > this repo; see [`design.md`](design.md). For the sibling comparison
 > against OpenAI Codex's `goal`, see
 > [`comparison-codex.md`](comparison-codex.md).
@@ -54,8 +54,8 @@ goal per session; `/goal` with no argument shows status (turns, tokens,
 time, last reason); `/goal clear` cancels. It runs in interactive mode,
 in `-p`, in the desktop app, and through Remote Control.
 
-**GoaLoop.** A user writes a `goal.md` (via the `/goal-init` interview or
-`/goal-flash` one-shot) that spells out the objective, hard constraints,
+**GoaLoop.** A user writes a `goal.md` (via the `/goal-flash` one-shot, or
+by hand) that spells out the objective, hard constraints,
 and — crucially — a concrete **Verification** procedure. A detached
 Python orchestrator then spawns one fresh `claude -p` **Runner** per
 attempt: it reads the workspace, runs the Verification, does one unit of
@@ -135,7 +135,7 @@ the evaluator to read. The check is not executed by the judge — it is
 *read* by the judge from what the worker chose to surface.
 
 **GoaLoop makes verification a literal, executable procedure, mandatory at
-init.** `/goal-init` is a hard gate:
+init.** `/goal-flash` is a hard gate:
 
 > Acceptable: "run `./scripts/foo.sh` and check exit code", "parse
 > `metrics.p99` from result.json and compare against 5.0", "score
@@ -238,5 +238,5 @@ context away each attempt.
 - [`design.md`](design.md) — full design and rationale
 - [`comparison-codex.md`](comparison-codex.md) — the sibling comparison against OpenAI Codex's `goal`
 - `agents/goal-runner.md` — the Runner system prompt (verification procedure)
-- `skills/goal-init/SKILL.md` — the strict verification-rigor gate
+- `skills/goal-flash/SKILL.md` — the single entry point + strict verification-rigor gate
 - `goaloop/orchestrator.py` — the attempt loop and terminator handling
