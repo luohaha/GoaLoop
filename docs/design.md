@@ -131,9 +131,9 @@ the artifact directly, and the structural independence comes from being a
 different Runner than the one that wrote the artifact.
 
 The load-bearing requirement on the human is to write a concrete
-Verification procedure at `/goal-init` time. If a goal cannot be expressed
-that way, GoaLoop refuses to initialize the workspace — that refusal is
-itself useful product feedback to the human.
+Verification procedure when the goal is created (via `/goal-flash`). If a
+goal cannot be expressed that way, GoaLoop refuses to initialize the
+workspace — that refusal is itself useful product feedback to the human.
 
 ### 3. Honest about what the framework can enforce
 
@@ -185,7 +185,7 @@ lives on disk. GoaLoop *is* a Ralph loop, with thin structure added:
 The objective + hard constraints + a literal verification procedure that
 will be executed to decide whether the objective and constraints are
 satisfied. Captured in `goal.md`. Mutable mid-run — editing `goal.md` takes
-effect on the next `/goal-run` invocation.
+effect on the next attempt.
 
 **Workspace**
 A directory that contains one goal-driven task instance. It lives at
@@ -197,9 +197,8 @@ Claude Code sessions; external resource conflicts (shared clusters, shared
 GPUs) are not GoaLoop's concern.
 
 **Manager**
-The user's main CC session, driven by the `/goal-init` and
-`/goal-run` skills. Starts/stops the orchestrator, reads its status files,
-talks to the user. Holds no authoritative state itself — the workspace files
+The user's main CC session, driven by the `/goal-flash` skill.
+Starts/stops the orchestrator, reads its status files, talks to the user. Holds no authoritative state itself — the workspace files
 are the source of truth.
 
 **Orchestrator**
@@ -247,7 +246,7 @@ tokens.
 │   └── ...            # Append-only: each file is written once, never modified
 └── .goaloop/          # Orchestrator-private state (not part of the goal record)
     ├── state.json     # Checkpoint: active session id + cumulative counters/cost for resume
-    ├── status.txt     # Current one-line orchestrator status (read by /goal-run)
+    ├── status.txt     # Current one-line orchestrator status (read by /goal-flash)
     ├── attempt_complete.json  # Last completed attempt's {attempt, status, cost_usd, total_cost_usd}
     ├── continue.json  # copilot-mode approval token (written by `goaloop continue`)
     ├── orchestrator.log       # Per-attempt log: Runner messages, tool calls, results
@@ -335,7 +334,7 @@ full model:
 
 | Status | Source | Carries | Terminal? | Orchestrator response |
 |---|---|---|---|---|
-| **pass** | Runner | `verification` summary | Yes (success) | Exit; `status.txt` records PASS; `/goal-run` tells the user DONE |
+| **pass** | Runner | `verification` summary | Yes (success) | Exit; `status.txt` records PASS; `/goal-flash` tells the user DONE |
 | **advanced** | Runner | `summary` | No | Runner did ONE unit of work and wrote `attempts/NNN.md`; orchestrator paces (or, in copilot mode, waits for approval), then starts the NEXT attempt with a FRESH session |
 | **in_progress** | Runner | `wait_secs` | No | Runner paused mid-attempt to wait out a long pollable job; orchestrator exits the process during the wait (zero tokens), sleeps, then `--resume`s the SAME session. Attempt number does not advance |
 | **blocked** | Runner | `reason` | Yes (needs human) | Runner judges it cannot reach `pass` and another advance won't help (stuck, needs a human); orchestrator exits |
@@ -379,59 +378,53 @@ anti-cheat property (Runner N has no memory of Runner N−1). Same-session
 A tiny checkpoint at `.goaloop/state.json` holds the active session id for
 crash recovery; on a give-up (`error`) the session is cleared.
 
-### The skills
+### The skill
 
-#### `/goal-init`
+#### `/goal-flash`
 
-An interactive interview that produces a valid `goal.md` and the workspace
-directory. The interview is strict: if the user cannot articulate the
-verification procedure concretely, the skill refuses to write the file and
-asks for clarification. This is by design — the framework's load-bearing
-guarantee is the rigor of `goal.md`'s Verification section.
+The single skill and entry point. It collapses what used to be a separate
+init + run into one shot: from a task the user can state in a sentence, it
+**infers** a complete `goal.md`, writes it, starts the orchestrator, and
+relays progress.
 
-Interview script (each step waits for the user's answer before proceeding):
+**Infer the goal.** Instead of a question-at-a-time interview, flash infers
+every section from the short description — workspace name auto-named (the
+path `~/.goaloop/<name>` derived, never asked), objective restated as a
+quantitative end-state where possible, Hard Constraints only where the
+description implies them (else `None`), Environment & Tools reverse-engineered
+from the verification command, Initial Context omitted unless useful. It then
+writes `<workspace>/goal.md` and creates `<workspace>/memory/` and
+`<workspace>/attempts/` (`learnings.md` is created by the Runner on first
+write), shows the inferred `goal.md` to the user, and calls out the
+Verification and any assumptions so a wrong inference is easy to catch fast.
 
-1. **Workspace name.** "What should I call this workspace? It will live at
-   `~/.goaloop/<name>`." (path is derived from the name, never asked)
-2. **Objective.** "In one sentence, what are you trying to achieve? Make it
-   quantitative if possible."
-3. **Hard Constraints.** "What absolutely cannot change or degrade while
-   pursuing this objective?" (zero or more)
-4. **Verification of objective.** "How will we know the objective is met?
-   Give me a command I can run, or a state I can observe. If I can't grep
-   the answer or compare a number, we need to refine the objective. How
-   does the procedure signal pass / fail?"
-5. **Verification of each constraint.** For each constraint from step 3:
-   "How will we check this constraint?"
-6. **Environment & Tools.** "What does running these verification steps
-   require — CLI tools, credentials, external system access, file paths,
-   preconditions?"
-7. **Initial Context (optional).** "Anything else the Runner should know on
-   its first invocation?"
+**The one invariant it does not relax is verification rigor** (Philosophy
+§2): the only thing flash may not infer is a fabricated check. If a concrete
+verification cannot be derived from the description, flash refuses and asks
+the user that single question — how to verify the objective concretely (a
+command + how to parse it + a pass/fail rule) — rather than writing a
+placeholder. Acceptable: "run `./scripts/foo.sh` and check exit code",
+"parse `metrics.p99` and compare against 5.0", "score `draft.md` against
+`rubric.md`, pass at ≥ 8.0". Unacceptable: "the agent looks at it and
+decides". This keeps the framework's load-bearing guarantee intact while
+removing interview friction; a goal that genuinely can't be verified is
+itself useful product feedback to the human.
 
-The skill then writes `<workspace>/goal.md` and creates
-`<workspace>/memory/` and `<workspace>/attempts/`. `learnings.md` may be
-omitted at init (Runner creates it on first write). Output: the path to the
-workspace and a one-line confirmation.
+**Start and relay.** After writing `goal.md`, flash starts the orchestrator
+with `goaloop run <name>` (detached background process; optional `--model` /
+`--interval` / `--mode`), then relays progress. It reads `.goaloop/status.txt`,
+`.goaloop/attempt_complete.json`, and the latest `attempts/NNN.md` to
+summarize for the user, arming a persistent Monitor on the workspace's signals
+so each completed round is relayed without polling. On PASS (orchestrator
+exited), it tells the user DONE and quotes the verification summary. On
+`blocked`, it quotes the Runner's reason (needs human). On `error`, it surfaces
+the infra give-up. In copilot mode, after each `advanced` attempt it relays and
+approves the next with `goaloop continue <name>` on the user's go-ahead.
 
-#### `/goal-run`
-
-Starts (or checks) the orchestrator and relays its progress. The skill body
-instructs the Manager to perform, in order:
-
-1. **Locate the workspace** at `~/.goaloop/<name>`; require `goal.md`,
-   `memory/`, `attempts/` (else send the user to `/goal-init`).
-2. **Check liveness.** `goaloop status <name>`. If already RUNNING, skip to
-   relay; do not start a second orchestrator.
-3. **Start the orchestrator.** `goaloop run <name>` (detached background
-   process). Optional `--model` / `--interval` / `--mode`.
-4. **Relay progress.** Read `.goaloop/status.txt`,
-   `.goaloop/attempt_complete.json`, and the latest `attempts/NNN.md` to
-   summarize for the user. On PASS (orchestrator exited), tell the user DONE
-   and quote the verification summary. On `blocked`, quote the Runner's
-   reason (needs human). On `error`, surface the infra give-up. In copilot
-   mode, after each `advanced` attempt relay it and approve the next with
-   `goaloop continue <name>` on the user's go-ahead.
+Because the goal was inferred rather than interviewed, `goal.md`'s mutability
+mid-run (the steering wheel — see Human guidance protocol) is the correction
+channel: edit `goal.md` to amend the spec, drop a `suggestions/NNN.md` note
+(via `goaloop suggest`) for a transient per-attempt nudge, or `goaloop stop`.
 
 The orchestrator, not the Manager, performs the per-attempt mechanics:
 
@@ -457,30 +450,6 @@ The orchestrator, not the Manager, performs the per-attempt mechanics:
 The Manager is otherwise passive: it does not read `goal.md` to make
 decisions (only to quote to the user), does not run Verification, does not
 modify the workspace, does not update `learnings.md`.
-
-#### `/goal-flash`
-
-A fast path that collapses `/goal-init` + `/goal-run` into one shot, for
-tasks the user can state in a sentence — where the seven-question interview
-is overkill. Instead of interviewing, it **infers** a complete `goal.md`
-from the short description (workspace name auto-named, Hard Constraints
-defaulted to `None`, Environment & Tools reverse-engineered from the
-verification command, Initial Context omitted unless useful), shows it to
-the user, and starts the orchestrator immediately — no question-at-a-time,
-no per-section confirmation.
-
-The one invariant it does **not** relax is verification rigor (Philosophy
-§2): the only thing flash may not infer is a fabricated check. If a concrete
-verification cannot be derived from the description, flash refuses and sends
-the user to `/goal-init` (or asks that single question) rather than writing
-a placeholder. This keeps the load-bearing guarantee intact while removing
-the friction for already-clear tasks.
-
-Because the goal was inferred rather than interviewed, `goal.md`'s
-mutability mid-run (the steering wheel — see Human guidance protocol) is the
-correction channel: flash surfaces the inferred Verification and any
-assumptions so the user can catch a wrong inference fast and edit `goal.md`,
-or `goaloop stop`. Progress relay after start is identical to `/goal-run`.
 
 The Runner, on its end, follows this fixed workflow:
 
@@ -588,7 +557,7 @@ sections so future Runners can scan quickly:
 
 ### How to run
 
-The user runs `goaloop run <name>` (directly or via `/goal-run`), which
+The user runs `goaloop run <name>` (directly or via `/goal-flash`), which
 launches the detached orchestrator. It runs each attempt as a fresh
 `claude -p` Runner and exits on `pass`. Because it is its own process, it
 keeps iterating regardless of whether the Claude Code session that launched
@@ -632,7 +601,7 @@ indefinitely.)
 
 Human pacing during a run is achieved by:
 
-- **Reading status** via `/goal-run` (or `goaloop status`, or
+- **Reading status** via `/goal-flash` (or `goaloop status`, or
   `tail -f .goaloop/orchestrator.log`) — the orchestrator writes `status.txt` and
   `attempt_complete.json` each attempt.
 - **Editing `goal.md`** (permanent) or **dropping a `suggestions/NNN.md`**
@@ -643,7 +612,7 @@ Human pacing during a run is achieved by:
 
 > **Important.** The orchestrator drives itself — it is a `while` loop in
 > `goaloop run`, not a `ScheduleWakeup` chain and not wrapped in `/loop`.
-> `/goal-run` only starts/checks it; the Manager does not schedule attempts.
+> `/goal-flash` only starts/relays it; the Manager does not schedule attempts.
 
 ### No loop nesting
 
@@ -703,11 +672,11 @@ with the reason so future contributors don't reintroduce them by reflex.
 | Workspace isolation primitives (`snapshot`, `rollback`) | Trial-and-rollback inside one Runner attempt is the Runner's responsibility (`git stash`, copy directories, whatever fits); the framework only sees the end of each attempt |
 | Cross-workspace sharing (learnings / skills / templates) | v1 keeps workspaces fully independent; cross-workspace patterns can be added when concrete demand appears |
 | External resource locks (shared clusters, GPUs) | Outside GoaLoop's scope; if needed, the user's verification scripts coordinate via whatever mechanism fits their environment |
-| Custom monitor TUI | `.goaloop/orchestrator.log` (`tail -f`) plus `goaloop status` / `/goal-run` cover live monitoring; a bespoke TUI isn't worth the maintenance |
+| Custom monitor TUI | `.goaloop/orchestrator.log` (`tail -f`) plus `goaloop status` / `/goal-flash` cover live monitoring; a bespoke TUI isn't worth the maintenance |
 | `events.jsonl` event stream | `orchestrator.log` already captures per-attempt Runner messages, tool calls, and results; one less format |
-| `questions.md` (agent → human async channel) | The Runner records open questions in `attempts/NNN.md` / `learnings.md`; the human reads them via `/goal-run` |
-| `DONE` marker file | Not needed — the orchestrator exiting on `pass` and `status.txt` recording PASS is the signal; `/goal-run` relays "DONE" to the user |
-| Nested `/loop` invocations | GoaLoop's single loop is the `goaloop run` orchestrator; `/goal-run` neither wraps `/loop` nor schedules wakeups |
+| `questions.md` (agent → human async channel) | The Runner records open questions in `attempts/NNN.md` / `learnings.md`; the human reads them via `/goal-flash` |
+| `DONE` marker file | Not needed — the orchestrator exiting on `pass` and `status.txt` recording PASS is the signal; `/goal-flash` relays "DONE" to the user |
+| Nested `/loop` invocations | GoaLoop's single loop is the `goaloop run` orchestrator; `/goal-flash` neither wraps `/loop` nor schedules wakeups |
 | Manager-side verification or memory curation | Runner is the sole writer to `learnings.md` and `attempts/`; keeps a single authoritative writer per file |
 | Pre-check / post-check duplication | One Verification per attempt; the next attempt's Verification serves as the prior attempt's post-mortem |
 
@@ -730,7 +699,7 @@ benchmark, without increasing memory by more than 10%":
 - Environment & Tools: SSH config, scripts location, database source path,
   GitHub CLI for PRs, `jq`.
 
-Test: can a Runner in `/goal-run` plausibly do a benchmark-analyze-fix
+Test: can a Runner plausibly do a benchmark-analyze-fix
 attempt within this spec, without GoaLoop needing domain-specific features?
 The "deploy" step lives inside the verification scripts (the human's
 responsibility); the Runner's work is investigation + code change. Each
@@ -767,8 +736,7 @@ domain-specific features and no awkward workarounds.
 Small decisions not load-bearing on the architecture, settled while writing
 the skills and the Runner system prompt (recorded here for context):
 
-- Exact wording of the `/goal-init` interview prompts.
-- Exact wording of the `/goal-run` Manager skill body.
+- Exact wording of the `/goal-flash` skill body (goal inference + relay).
 - Exact system prompt for the Runner (`agents/goal-runner.md`, used as
   `--append-system-prompt`).
 - What guidance to give the Runner about when `learnings.md` entries should
@@ -791,7 +759,7 @@ Possible additions if real usage exposes a need, not commitments:
 - A cross-workspace shared-skills mechanism if multiple workspaces start
   repeating the same verification utilities.
 - A "templates" library of common `goal.md` shapes (perf, flaky-test,
-  writing) to bootstrap `/goal-init`.
+  writing) to bootstrap `/goal-flash`.
 - Support for `goal.md` to point at an external verification script file
   rather than inlining the procedure, for very long verification specs.
 - Parallel Runner spawning within one Manager iteration, if a goal

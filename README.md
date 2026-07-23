@@ -16,7 +16,7 @@ verification passes or you stop it.
 
 The framework is a lean Python package (`goaloop`: a `claude -p` adapter,
 the attempt loop, and a `run`/`status`/`stop`/`continue` CLI) plus the
-Claude Code skills and the Runner's system prompt. The orchestrator is
+Claude Code skill and the Runner's system prompt. The orchestrator is
 detached, so it keeps iterating even if you close the Claude Code session
 that started it. On a Claude Code subscription, `claude -p` is
 subscription-covered — no per-token API rates.
@@ -64,12 +64,12 @@ verification passes.
 ## Install
 
 Two pieces, two commands: install the `goaloop` CLI (the orchestrator),
-then deploy the Claude Code skills (the Manager front-end). Both ship in
+then deploy the Claude Code skill (the Manager front-end). Both ship in
 the package — no source checkout needed.
 
 ```bash
 uv tool install goaloop      # provides the `goaloop` command (stdlib-only, Python ≥ 3.10)
-goaloop install              # deploys /goal-init, /goal-run, /goal-flash + the goal-runner agent into ~/.claude
+goaloop install              # deploys /goal-flash + the goal-runner agent into ~/.claude
 ```
 
 `uvx goaloop ...` works too if you prefer not to install persistently;
@@ -80,9 +80,9 @@ Code CLI must be on your `PATH` and authenticated.
 
 `goaloop install` skips any skill/agent that already exists; pass
 `--force` to overwrite. Verify by opening Claude Code and typing
-`/goal-init` — it should be recognized. (You can also drive the
+`/goal-flash` — it should be recognized. (You can also drive the
 orchestrator entirely from the shell with `goaloop run`, skipping the
-skills.)
+skill.)
 
 <details>
 <summary>From source (development)</summary>
@@ -98,21 +98,23 @@ goaloop install                  # same skill/agent deploy as above
 ## Quickstart
 
 ```
-> /goal-init
+> /goal-flash make the repo's test suite pass
 ```
 
-Claude interviews you with seven questions: workspace name (the
-workspace lives at `~/.goaloop/<name>`), objective, hard constraints,
-how to verify the objective (concretely!), how to verify each
-constraint, what environment/tools the verification needs, and any
-initial context.
+Hand `/goal-flash` a task you can state in a sentence. It infers a complete
+`goal.md` in one shot — workspace name (the workspace lives at
+`~/.goaloop/<name>`), objective, hard constraints, environment, and the
+load-bearing **Verification** procedure — shows it to you, and starts the
+orchestrator immediately. No question-at-a-time interview.
 
-The interview is **strict** about getting concrete verification — if
-you can't articulate a real check, GoaLoop refuses to write the
-`goal.md`. That refusal is the point: a goal you can't verify is a
-goal you can't reach.
+The one hard rule is **concrete verification**: if a real check can't be
+inferred, GoaLoop refuses to fabricate one and asks you for it instead. That
+refusal is the point — a goal you can't verify is a goal you can't reach.
+Acceptable checks look like "run `./scripts/foo.sh`, exit 0 passes" or "parse
+`metrics.p99` from result.json, pass if ≤ 5.0"; "the agent looks at it and
+decides" is not.
 
-When the interview completes, your workspace looks like:
+Your workspace then looks like:
 
 ```
 <workspace>/
@@ -121,24 +123,10 @@ When the interview completes, your workspace looks like:
 └── attempts/         # one file per attempt, write-once audit trail
 ```
 
-Then start it (either way):
-
-```
-> /goal-run                  # via Claude Code: starts the orchestrator, relays status
-$ goaloop run <name>         # or straight from the shell
-```
-
-### Fast path: `/goal-flash`
-
-When the task is already clear enough to state in a sentence, the
-seven-question interview is overkill. `/goal-flash <one-line task>`
-infers a complete `goal.md` in one shot (workspace name, constraints,
-environment — all derived; no question-at-a-time), shows it to you, and
-starts the orchestrator immediately. The same hard rule still applies:
-if a concrete verification can't be inferred, it refuses and sends you
-to `/goal-init` rather than fabricating one. Since the goal was inferred,
-`goal.md` stays the steering wheel — edit it mid-run if the inference was
-off, or `goaloop stop`.
+Since the goal was inferred, `goal.md` stays the steering wheel — edit it
+mid-run if the inference was off, or `goaloop stop`. You can also skip the
+skill entirely and drive the orchestrator from the shell: write a `goal.md`
+by hand and run `goaloop run <name>`.
 
 ## Running
 
@@ -150,8 +138,8 @@ Runner, and exits on `pass`. Because it's a detached process, it keeps
 going even if you close Claude Code.
 
 ```
-> /goal-run                  # start + watch from Claude Code
-$ goaloop status <name>      # check on it from the shell
+> /goal-flash <task>         # from Claude Code: infer goal.md, start, and relay status
+$ goaloop status <name>      # or check on it straight from the shell
 $ tail -f ~/.goaloop/<name>/.goaloop/orchestrator.log   # watch live
 $ goaloop continue <name>    # release the next attempt (copilot mode)
 $ goaloop stop <name>        # stop early
@@ -161,7 +149,7 @@ The orchestrator terminates when:
 
 - The Runner reports `pass` — goal met; the process exits.
 - The Runner reports `blocked` — it judges the goal unreachable without a
-  human; the process exits and `/goal-run` quotes the reason.
+  human; the process exits and `/goal-flash` quotes the reason.
 - It gives up with `error` after bounded retries of malformed / failing
   attempts (a broken-Runner guard, not a goal condition).
 - You run `goaloop stop <name>` (SIGTERM).
@@ -170,7 +158,7 @@ The orchestrator terminates when:
 the same session indefinitely.)
 
 You stay in control throughout: read what each attempt did via
-`/goal-run` or `goaloop status`; **edit `goal.md`** for a permanent
+`/goal-flash` or `goaloop status`; **edit `goal.md`** for a permanent
 change or **drop a `suggestions/NNN.md`** note for a transient per-attempt
 nudge — the Runner of that attempt reads it. There's no live conversation into
 a running Runner.
@@ -290,7 +278,7 @@ side-by-side (and a note on the several pi goal extensions).
 
 ## Status
 
-v0.1. The `goaloop` loop, CLI, and skills are implemented and pass an
+v0.1. The `goaloop` loop, CLI, and skill are implemented and pass an
 end-to-end smoke test; not yet battle-tested across diverse domains. The
 design and rationale are in [`docs/design.md`](docs/design.md).
 

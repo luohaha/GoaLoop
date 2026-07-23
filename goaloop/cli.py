@@ -131,7 +131,7 @@ def _reap_job_processes(pattern: str, exclude: set[int]) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     ws = _resolve_workspace(args.workspace)
     if not (ws / "goal.md").exists():
-        print(f"No goal.md at {ws} — run /goal-init first.", file=sys.stderr)
+        print(f"No goal.md at {ws} — run /goal-flash first.", file=sys.stderr)
         return 1
 
     if (pid := _running_pid(ws)) is not None:
@@ -345,12 +345,12 @@ def cmd_suggest(args: argparse.Namespace) -> int:
 
 
 def cmd_install(args: argparse.Namespace) -> int:
-    """Deploy the bundled skills and Runner agent into ~/.claude.
+    """Deploy the bundled skill and Runner agent into ~/.claude.
 
-    Makes `/goal-init`, `/goal-run`, `/goal-flash` and the `goal-runner`
-    subagent available to every Claude Code session. The assets ship inside
-    the installed package (`resources/`), so this works from a `uv tool
-    install` / `pip install` with no source checkout.
+    Makes `/goal-flash` and the `goal-runner` subagent available to every
+    Claude Code session. The assets ship inside the installed package
+    (`resources/`), so this works from a `uv tool install` / `pip install`
+    with no source checkout.
     """
     resources = Path(__file__).resolve().parent / "resources"
     claude = Path.home() / ".claude"
@@ -392,7 +392,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         print("Nothing to install — no bundled resources found.", file=sys.stderr)
         return 1
     if copied:
-        print("\nDone. Open Claude Code and type /goal-init to verify.")
+        print("\nDone. Open Claude Code and type /goal-flash to verify.")
     return 0
 
 
@@ -455,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:
     p_suggest.set_defaults(func=cmd_suggest)
 
     p_install = sub.add_parser(
-        "install", help="deploy bundled skills + agent into ~/.claude")
+        "install", help="deploy bundled skill + agent into ~/.claude")
     p_install.add_argument("--force", action="store_true",
                            help="overwrite existing skills/agents")
     p_install.set_defaults(func=cmd_install)
