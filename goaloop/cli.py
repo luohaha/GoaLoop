@@ -18,6 +18,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from .agent import available_agents
 from .config import load_config
 from .orchestrator import Orchestrator
 
@@ -67,7 +68,7 @@ def _ts() -> str:
 
 
 def _terminate(pid: int) -> None:
-    """SIGTERM the orchestrator AND its `claude -p` child.
+    """SIGTERM the orchestrator AND its headless Runner child.
 
     A backgrounded orchestrator is its own session/group leader
     (`start_new_session=True` in `_run_background`), so signaling the whole
@@ -139,8 +140,20 @@ def cmd_run(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
 
+    cfg = load_config(ws)
+    agent = args.agent or cfg.agent
+    supported_agents = available_agents()
+    if agent not in supported_agents:
+        choices = ", ".join(supported_agents)
+        print(
+            f"Unsupported agent provider {agent!r} in config.yaml; "
+            f"choose one of: {choices}.",
+            file=sys.stderr,
+        )
+        return 1
+
     # Clear strays a prior run left behind (detached jobs escape stop's killpg).
-    pattern = load_config(ws).job_cleanup_pattern
+    pattern = cfg.job_cleanup_pattern
     if pattern and (n := _reap_job_processes(pattern, exclude=set())):
         print(f"Cleared {n} stray job process(es) matching '{pattern}' from a prior run.")
 
@@ -152,6 +165,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 def _run_foreground(ws: Path, args: argparse.Namespace) -> int:
     # Resolve effective settings: CLI flags override config.yaml override defaults.
     cfg = load_config(ws)
+    agent = args.agent or cfg.agent
     model = args.model or cfg.model
     interval = args.interval if args.interval is not None else cfg.interval
     mode = args.mode or cfg.mode
@@ -175,7 +189,7 @@ def _run_foreground(ws: Path, args: argparse.Namespace) -> int:
     signal.signal(signal.SIGTERM, _sigterm)
 
     try:
-        Orchestrator(ws, model=model, interval=interval, mode=mode,
+        Orchestrator(ws, agent=agent, model=model, interval=interval, mode=mode,
                  max_attempts=max_attempts, max_cost_usd=max_cost, log=log).run()
         return 0
     finally:
@@ -193,6 +207,8 @@ def _run_background(ws: Path, args: argparse.Namespace) -> int:
         cmd += ["--interval", str(args.interval)]
     if args.model:
         cmd += ["--model", args.model]
+    if args.agent:
+        cmd += ["--agent", args.agent]
     if args.mode:
         cmd += ["--mode", args.mode]
     if args.max_attempts is not None:
@@ -398,9 +414,8 @@ def cmd_install(args: argparse.Namespace) -> int:
 
 def _load_env_file(path: Path = Path.home() / ".goaloop.env") -> None:
     """Load an optional env file into os.environ so the detached orchestrator
-    (and, via adapter.py's dict(os.environ), every claude Runner) inherit it —
-    e.g. CLAUDE_CODE_ENABLE_TELEMETRY and OTEL_*. Existing env vars are not
-    overridden, so an explicit shell export still wins.
+    and every provider Runner inherit it — e.g. telemetry/export settings.
+    Existing env vars are not overridden, so an explicit shell export wins.
     """
     if not path.is_file():
         return
@@ -416,8 +431,11 @@ def main(argv: list[str] | None = None) -> int:
     p_run = sub.add_parser("run", help="start (or background) the orchestrator")
     p_run.add_argument("workspace", help="workspace name (~/.goaloop/<name>) or path")
     p_run.add_argument("--foreground", "-f", action="store_true", help="run inline, not detached")
+    p_run.add_argument("--agent", choices=available_agents(), default=None,
+                       help="headless worker provider (overrides config.yaml; "
+                            "default claude)")
     p_run.add_argument("--model", default=None,
-                       help="model for claude -p (overrides config.yaml)")
+                       help="model for the selected agent (overrides config.yaml)")
     p_run.add_argument("--interval", type=int, default=None,
                        help="seconds between successful attempts "
                             "(overrides config.yaml; default 30)")
@@ -428,8 +446,8 @@ def main(argv: list[str] | None = None) -> int:
                        help="stop after this many attempts (overrides "
                             "config.yaml; default unlimited)")
     p_run.add_argument("--max-cost", type=float, default=None, dest="max_cost",
-                       help="stop once cumulative claude -p cost (USD) reaches "
-                            "this (overrides config.yaml; default unlimited)")
+                       help="stop once cumulative provider-reported cost (USD) "
+                            "reaches this (overrides config.yaml; default unlimited)")
     p_run.set_defaults(func=cmd_run)
 
     p_status = sub.add_parser("status", help="show orchestrator status and attempt count")
