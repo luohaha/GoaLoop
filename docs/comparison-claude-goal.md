@@ -1,5 +1,9 @@
 # GoaLoop vs. Claude Code `/goal` — competitive analysis
 
+> **Runtime note:** Concrete GoaLoop commands below use its default Claude
+> worker. The worker layer also supports headless Codex (`agent: codex`);
+> the detached-loop and verification semantics are provider-independent.
+
 Both tools answer the same question: *how do you let an LLM agent keep
 working toward a target across many turns/attempts until it's actually
 done?* Claude Code's `/goal` command (shipped in v2.1.139, May 2026) is

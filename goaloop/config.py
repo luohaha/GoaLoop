@@ -6,11 +6,13 @@ values, which override these defaults. Anything domain-specific stays out
 of here — it belongs in `goal.md`.
 
 Recognized keys:
-  model        : model id passed to `claude -p` (default: CLI default / none)
+  agent        : worker provider, "claude" (default) | "codex"
+  model        : model id passed to the selected agent CLI (default: CLI default / none)
   interval     : seconds to pace between successful attempts (default 30)
   mode         : "auto" (default) | "copilot" (pause for approval each attempt)
   max_attempts : stop after this many attempts (default: unlimited)
-  max_cost_usd : stop once cumulative `claude -p` cost reaches this (default: unlimited)
+  max_cost_usd : stop once cumulative reported cost reaches this (default: unlimited;
+                 currently Claude reports cost while Codex CLI does not)
   job_cleanup_pattern : substring matched against process cmdlines; if set, `stop`
                  reaps (and `run` clears stray) processes whose cmdline contains it.
                  Use when the Runner launches long jobs detached (setsid/nohup) that
@@ -29,6 +31,7 @@ VALID_MODES = ("auto", "copilot")
 
 @dataclass
 class Config:
+    agent: str = "claude"
     model: str | None = None
     interval: int = DEFAULT_INTERVAL
     mode: str = "auto"
@@ -62,6 +65,9 @@ def load_config(workspace: Path) -> Config:
         return cfg
 
     raw = _parse_flat_yaml(path.read_text())
+    agent = raw.get("agent", "").lower()
+    if agent:
+        cfg.agent = agent
     if raw.get("model"):
         cfg.model = raw["model"]
     if raw.get("interval"):

@@ -1,5 +1,9 @@
 # GoaLoop vs. pi `goal` extensions — competitive analysis
 
+> **Runtime note:** Concrete GoaLoop commands below use its default Claude
+> worker. The worker layer also supports headless Codex (`agent: codex`);
+> the fresh-attempt and verification semantics are provider-independent.
+
 Both tools answer the same question: *how do you let an LLM agent keep
 working toward a target across many turns/attempts until it's actually
 done?* The interesting comparison here is with **[pi](https://github.com/earendil-works/pi)**,

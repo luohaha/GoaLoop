@@ -1,4 +1,4 @@
-"""Thin wrapper around `claude -p` (Claude Code non-interactive mode).
+"""Claude provider for the worker-agent abstraction.
 
 Distilled from auto-perf-opt's ClaudeAdapter, keeping only what GoaLoop's
 lean loop needs: spawn the process, parse the stream-json events for a
@@ -18,25 +18,15 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from dataclasses import dataclass
 from typing import Callable, TextIO
 
-# Result text that means the account hit its API quota / rate limit. The
-# loop responds by sleeping for a cool-down and resuming the same session.
-_QUOTA_RE = re.compile(
-    r"hit your (?:\w+ )?limit|(?:session|usage) limit|rate limit|"
-    r"quota exceeded|too many requests|overloaded|"
-    r"resets \d{1,2}(?::\d{2})?\s*[ap]m",
-    re.IGNORECASE,
-)
-
-# Transient network / upstream hiccups. The loop resumes the same session
-# (so in-flight work like a long verification survives) after a short wait.
-_TRANSIENT_RE = re.compile(
-    r"ECONNRESET|ETIMEDOUT|ENETUNREACH|EAI_AGAIN|socket hang up|"
-    r"fetch failed|connection reset|connection refused|bad gateway|"
-    r"service unavailable|gateway timeout|\b50[234]\b",
-    re.IGNORECASE,
+from .agent import (
+    AgentResult,
+    QUOTA_RE as _QUOTA_RE,
+    QuotaExhausted,
+    SessionStarted,
+    TRANSIENT_RE as _TRANSIENT_RE,
+    TransientError,
 )
 
 # High-precision Claude Code usage-limit notice, used to scan the Runner's
@@ -80,28 +70,8 @@ def _classify_streams(
     return None
 
 
-class QuotaExhausted(Exception):
-    """API quota / rate limit hit; the loop waits and resumes."""
-
-
-class TransientError(Exception):
-    """Resumable network error. `session_id` is the session to `--resume`."""
-
-    def __init__(self, message: str, session_id: str):
-        self.session_id = session_id
-        super().__init__(message)
-
-
-@dataclass
-class ClaudeResult:
-    text: str
-    session_id: str
-    cost_usd: float | None = None
-    # delaySeconds of the LAST ScheduleWakeup tool call the Runner made this
-    # turn (or None). Lets the orchestrator treat a Runner that paused via the
-    # tool — the way it naturally would in the interactive harness — as
-    # in_progress, even if it forgot the {"status":"in_progress"} terminator.
-    requested_resume_secs: int | None = None
+# Backwards-compatible name for callers that imported the old concrete result.
+ClaudeResult = AgentResult
 
 
 class ClaudeAdapter:
@@ -111,6 +81,9 @@ class ClaudeAdapter:
     (`--append-system-prompt`) — GoaLoop passes the Runner instructions
     here. `cwd` is where the Runner operates (the workspace).
     """
+
+    provider = "claude"
+    reports_cost = True
 
     def __init__(
         self,
@@ -123,6 +96,11 @@ class ClaudeAdapter:
         self.system_prompt = system_prompt
         self.model = model
         self.log = log
+
+    def allocate_session_id(self) -> str:
+        """Claude accepts a caller-provided UUID before the process starts."""
+
+        return str(uuid.uuid4())
 
     def _build_args(self, prompt: str, session_id: str, resume: bool) -> list[str]:
         args = [
@@ -145,7 +123,8 @@ class ClaudeAdapter:
         session_id: str | None = None,
         resume: bool = False,
         stderr: TextIO | int | None = None,
-    ) -> ClaudeResult:
+        on_session_started: SessionStarted | None = None,
+    ) -> AgentResult:
         """Execute one turn. Returns the result text + cost.
 
         `session_id=None` mints a fresh uuid (the normal per-attempt case);
@@ -160,7 +139,9 @@ class ClaudeAdapter:
         families, RuntimeError for a hard non-zero exit with no result.
         """
         if session_id is None:
-            session_id = str(uuid.uuid4())
+            session_id = self.allocate_session_id()
+        if on_session_started is not None:
+            on_session_started(session_id)
         args = self._build_args(prompt, session_id, resume)
         # Resolve `claude` to an absolute path so a quirky PATH at spawn time
         # doesn't cause a spurious FileNotFoundError, and re-resolve every turn
@@ -226,7 +207,7 @@ class ClaudeAdapter:
                 + (f": {detail}" if detail else "")
             )
 
-        return ClaudeResult(
+        return AgentResult(
             text=result_text, session_id=session_id, cost_usd=cost,
             requested_resume_secs=resume_secs,
         )

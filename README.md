@@ -8,18 +8,18 @@
 > right" into a verifiable protocol.
 
 GoaLoop turns "iterate until the target is met" into a small, sharp
-protocol on top of Claude Code. You write a `goal.md` that spells out
-what "done" looks like and how to verify it. A small background
-orchestrator then runs each attempt as a fresh **`claude -p` Runner** —
-read context, verify, advance by one unit if needed, record — until the
-verification passes or you stop it.
+protocol on top of headless coding agents. You write a `goal.md` that spells
+out what "done" looks like and how to verify it. A small background
+orchestrator then runs each attempt as a fresh **Runner** — read context,
+verify, advance by one unit if needed, record — until the verification passes
+or you stop it.
 
-The framework is a lean Python package (`goaloop`: a `claude -p` adapter,
-the attempt loop, and a `run`/`status`/`stop`/`continue` CLI) plus the
-Claude Code skill and the Runner's system prompt. The orchestrator is
-detached, so it keeps iterating even if you close the Claude Code session
-that started it. On a Claude Code subscription, `claude -p` is
-subscription-covered — no per-token API rates.
+The first release of the worker-agent abstraction supports **Claude Code**
+(`claude -p`, the default) and **Codex** (`codex exec`). The framework is a
+lean Python package (provider adapters, the attempt loop, and a
+`run`/`status`/`stop`/`continue` CLI) plus the Claude Code Manager skill and
+the provider-neutral Runner prompt. The detached orchestrator keeps iterating
+after the Manager session closes.
 
 ## Why
 
@@ -56,10 +56,9 @@ rationale.
 
 Three layers: a **Manager** — the Claude Code agent you operate — starts
 the **Orchestrator** (a detached loop, not an LLM), which spawns a fresh
-**Runner** agent (`claude -p`) for each attempt. Every Runner verifies the
-current state — on `pass` the loop exits; on `fail` it advances one unit
-and the Orchestrator spawns the next Runner. The loop repeats until the
-verification passes.
+configured **Runner** (`claude -p` or `codex exec`) for each attempt. Every
+Runner verifies the current state — on `pass` the loop exits; on `fail` it
+advances one unit and the Orchestrator spawns the next Runner.
 
 ## Install
 
@@ -75,8 +74,9 @@ goaloop install              # deploys /goal-flash + the goal-runner agent into 
 `uvx goaloop ...` works too if you prefer not to install persistently;
 `pip install goaloop` is equivalent if you don't use uv. The Runner's
 system prompt ships inside the package (override with
-`GOALOOP_RUNNER_PROMPT`). The CLI shells out to `claude`, so the Claude
-Code CLI must be on your `PATH` and authenticated.
+`GOALOOP_RUNNER_PROMPT`). The selected worker CLI must be on `PATH` and
+authenticated: `claude` for the default provider or `codex` when using
+`--agent codex`.
 
 `goaloop install` skips any skill/agent that already exists; pass
 `--force` to overwrite. Verify by opening Claude Code and typing
@@ -133,9 +133,9 @@ by hand and run `goaloop run <name>`.
 GoaLoop runs as a single self-driven loop — the `goaloop run`
 orchestrator (a deterministic process, not an LLM). It is not wrapped in
 `/loop`: in the default `auto` mode it paces itself between attempts
-(`--interval`, default 30s), runs each attempt as a fresh `claude -p`
-Runner, and exits on `pass`. Because it's a detached process, it keeps
-going even if you close Claude Code.
+(`--interval`, default 30s), runs each attempt as a fresh worker session,
+and exits on `pass`. Because it's a detached process, it keeps going even if
+you close Claude Code.
 
 ```
 > /goal-flash <task>         # from Claude Code: infer goal.md, start, and relay status
@@ -154,7 +154,7 @@ The orchestrator terminates when:
   attempts (a broken-Runner guard, not a goal condition).
 - You run `goaloop stop <name>` (SIGTERM).
 
-(An API `quota` limit is not a stop — the orchestrator sleeps and resumes
+(A provider `quota` limit is not a stop — the orchestrator sleeps and resumes
 the same session indefinitely.)
 
 You stay in control throughout: read what each attempt did via
@@ -165,11 +165,26 @@ a running Runner.
 
 ### Configuration & modes
 
-An optional `<workspace>/config.yaml` sets defaults with flat keys —
-`model` (model id for `claude -p`), `interval` (seconds between attempts,
-default 30), and `mode` (`auto` default, or `copilot`). CLI flags
-(`--model`, `--interval`, `--mode`) override `config.yaml`, which
-overrides the built-in defaults.
+An optional `<workspace>/config.yaml` sets defaults with flat keys. `agent`
+selects `claude` (default) or `codex`; `model` is passed to the selected CLI;
+`interval` controls seconds between attempts (default 30); and `mode` is
+`auto` (default) or `copilot`. CLI flags override the file:
+
+```yaml
+agent: codex
+interval: 30
+mode: auto
+```
+
+```bash
+goaloop run <name> --agent codex
+```
+
+Both providers run unattended with permission/sandbox checks bypassed, matching
+GoaLoop's existing Runner behavior. Run only against a workspace and
+environment you trust. Claude reports per-turn USD cost; the Codex JSONL
+interface currently reports token usage but not USD cost, so `max_cost_usd`
+cannot enforce a Codex spend cap.
 
 In **copilot mode** the orchestrator pauses after each `advanced` attempt
 and waits for your approval before the next one; release it with
@@ -190,7 +205,7 @@ After running, the workspace looks like:
 ```
 <workspace>/
 ├── goal.md
-├── config.yaml           # optional: model / interval / mode / caps
+├── config.yaml           # optional: agent / model / interval / mode / caps
 ├── suggestions/          # optional: per-attempt human notes (NNN.md read by attempt NNN)
 ├── memory/
 │   └── learnings.md      # ~4KB cap; Runner curates this
@@ -218,7 +233,7 @@ After running, the workspace looks like:
   (paused to wait out a long pollable job, resume the same session), or
   `blocked` (stuck, needs a human). Long-running checks are completed
   inside one attempt rather than split across attempts.
-- **Anti-cheat by time.** Each Runner is a fresh `claude -p` session.
+- **Anti-cheat by time.** Each Runner is a fresh provider session.
   The Runner in attempt N judges what attempt N−1 left behind, with no
   shared context. Even for LLM-as-judge verification, no nested agent is
   needed — the time separation gives you arm's-length judging.
@@ -235,8 +250,8 @@ After running, the workspace looks like:
   "what success looks like" is purely a human judgment call, the
   framework's load-bearing assumption breaks. Use direct conversation
   with Claude instead.
-- When the iteration unit is sub-second. Spawning a `claude -p` Runner
-  per attempt has a multi-second floor.
+- When the iteration unit is sub-second. Spawning a headless Runner per
+  attempt has a multi-second floor.
 - When you need parallel exploration across independent hypotheses.
   Each orchestrator runs one Runner at a time. You can run multiple workspaces
   in parallel (`goaloop run` each), but there's no built-in coordination

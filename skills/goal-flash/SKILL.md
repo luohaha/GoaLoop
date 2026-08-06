@@ -8,12 +8,13 @@ hands you a task they can state in a sentence or two, and you turn it into a
 running loop in one shot: infer a complete `goal.md`, write it, show it, start
 the orchestrator, and relay progress until the goal is met.
 
-GoaLoop is a detached background loop that runs one fresh `claude -p` **Runner**
-per attempt against the `goal.md` you write. Each Runner reads context, runs the
-Verification, advances one unit of work if it fails, and records the attempt —
-until Verification passes, the Runner reports it's blocked, or you stop it. It
-keeps running even if this Claude Code session closes; all state lives in
-`<workspace>/.goaloop/`.
+GoaLoop is a detached background loop that runs one fresh headless **Runner**
+per attempt against the `goal.md` you write. The worker provider is Claude
+(`claude -p`, default) or Codex (`codex exec`). Each Runner reads context, runs
+the Verification, advances one unit of work if it fails, and records the
+attempt — until Verification passes, the Runner reports it's blocked, or you
+stop it. It keeps running even if this Claude Code session closes; all state
+lives in `<workspace>/.goaloop/`.
 
 Your role is **thin**: produce a good `goal.md`, start the orchestrator, and
 relay its status. You do **not** run Verification, modify the workspace once it's
@@ -123,11 +124,12 @@ Start it right away — that's the point of `/goal-flash`:
 goaloop run <name>
 ```
 
-Optional flags: `--model <id>` to pin the Runner's model, `--interval <secs>`
-to change pacing between attempts (default 30s), `--mode auto|copilot` to
-choose self-pacing vs. per-attempt human approval (default `auto`). These can
-also be set in `<workspace>/config.yaml` (flat keys `model` / `interval` /
-`mode`); CLI flags override the file.
+Optional flags: `--agent claude|codex` to select the worker (default Claude),
+`--model <id>` to pin its model, `--interval <secs>` to change pacing between
+attempts (default 30s), and `--mode auto|copilot` to choose self-pacing vs.
+per-attempt human approval (default `auto`). These can also be set in
+`<workspace>/config.yaml` (flat keys `agent` / `model` / `interval` / `mode`);
+CLI flags override the file.
 
 Tell the user it's running detached and how to steer, since you inferred the
 goal rather than interviewing for it:
@@ -267,6 +269,6 @@ durable guidance channels, by intent serving different purposes.
   `goal.md` edits the user approves), or write `memory/` or `attempts/` — the
   Runner owns those.
 - Do not spawn a `goal-runner` subagent via the `Agent` tool — the `goaloop`
-  orchestrator drives `claude -p` Runners; there is no subagent path.
+  orchestrator drives the configured headless Runner; there is no subagent path.
 - Do not call `ScheduleWakeup` fast or wrap this in `/loop` — the background
   orchestrator paces itself; use the persistent Monitor above to auto-relay.

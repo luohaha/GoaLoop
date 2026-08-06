@@ -1,12 +1,8 @@
 """The GoaLoop Orchestrator — the background process that drives attempts.
 
-Runs the attempt loop: spawns a fresh `claude -p` Runner over a workspace
+Runs the attempt loop: spawns a fresh headless worker agent over a workspace
 each attempt until the Runner's Verification passes, the Runner reports it's
-blocked, the human stops it, or unrecoverable errors are exhausted. The
-Orchestrator is deliberately dumb (Ralph-loop spirit): all authoritative
-state is the workspace on disk (`goal.md`, `memory/learnings.md`,
-`attempts/NNN.md`). It keeps only a tiny checkpoint so a crashed/quota-paused
-attempt can resume the same session instead of restarting from scratch.
+blocked, the human stops it, or unrecoverable errors are exhausted.
 """
 
 from __future__ import annotations
@@ -14,11 +10,10 @@ from __future__ import annotations
 import json
 import re
 import time
-import uuid
 from pathlib import Path
 from typing import Callable
 
-from .adapter import ClaudeAdapter, QuotaExhausted, TransientError
+from .agent import QuotaExhausted, TransientError, create_agent
 
 # Consecutive non-recoverable failures (malformed terminator, missing
 # attempt record, generic crash) before the loop gives up. Quota/transient
@@ -72,13 +67,16 @@ class Orchestrator:
         max_attempts: int | None = None,
         max_cost_usd: float | None = None,
         log: Callable[[str], None] = print,
+        agent: str = "claude",
     ):
         self.ws = workspace.resolve()
+        self.agent_name = agent.strip().lower()
         self.model = model
         self.interval = interval  # pacing between successful `advanced` attempts
         self.mode = mode  # "auto" | "copilot" (pause for approval each attempt)
         # Safety caps (None = unlimited). max_attempts bounds the highest
-        # attempt number; max_cost_usd bounds cumulative `claude -p` cost.
+        # attempt number; max_cost_usd bounds cumulative reported provider
+        # cost (providers that do not report monetary cost leave it unchanged).
         self.max_attempts = max_attempts
         self.max_cost_usd = max_cost_usd
         self.log = log
@@ -98,12 +96,18 @@ class Orchestrator:
         # context for that round (see agents/goal-runner.md, "Load context").
         # The orchestrator stays out of it — no injection, no consumption.
 
-        self.adapter = ClaudeAdapter(
+        self.adapter = create_agent(
+            self.agent_name,
             cwd=str(self.ws),
             system_prompt=_runner_system_prompt(),
             model=model,
             log=log,
         )
+        if self.max_cost_usd is not None and not self.adapter.reports_cost:
+            self.log(
+                f"[orchestrator] WARNING: {self.agent_name} does not report USD "
+                "cost; max_cost_usd cannot be enforced"
+            )
 
     # ---- workspace state helpers -------------------------------------
 
@@ -148,12 +152,13 @@ class Orchestrator:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoint_path.write_text(json.dumps(self.cp, indent=2))
 
-    def _set_active(self, session_id: str, attempt: int,
+    def _set_active(self, session_id: str | None, attempt: int,
                     goal_mtime: float | None) -> None:
         """Pin the active session + attempt and persist immediately, so a crash
         mid-attempt leaves a recoverable breadcrumb. Counters/cost in self.cp
         ride along (they persist across restarts, not just this process)."""
         self.cp["active_session_id"] = session_id
+        self.cp["active_agent"] = self.agent_name
         self.cp["attempt"] = attempt
         self.cp["goal_mtime"] = goal_mtime
         self._save_checkpoint()
@@ -236,6 +241,16 @@ with a single line that is exactly one of these JSON objects:
         # if goal.md hasn't moved (checked per-iteration below).
         resume_session: str | None = self.cp.get("active_session_id")
         active_goal_mtime: float | None = self.cp.get("goal_mtime")
+        # Checkpoints created before the provider abstraction are Claude
+        # sessions.  Never hand a session id to a different CLI.
+        checkpoint_agent = self.cp.get("active_agent", "claude")
+        if resume_session and checkpoint_agent != self.agent_name:
+            self.log(
+                f"[orchestrator] worker agent changed from {checkpoint_agent} "
+                f"to {self.agent_name} — starting a fresh session"
+            )
+            resume_session = None
+            active_goal_mtime = None
 
         while True:
             n = self._next_attempt_number()
@@ -279,7 +294,9 @@ with a single line that is exactly one of these JSON objects:
                 prompt = _CONTINUE_PROMPT  # session already holds the brief + context
                 self.log(f"[orchestrator] attempt {n:03d}: resuming session {session_id[:8]}")
             else:
-                session_id, resume = str(uuid.uuid4()), False
+                # Claude can reserve a UUID before spawn; Codex learns its
+                # thread id from the thread.started JSONL event.
+                session_id, resume = self.adapter.allocate_session_id(), False
                 active_goal_mtime = self._goal_mtime()  # pin goal version to this session
                 prompt = self._build_brief(n)
             # Persist the active session BEFORE the call so a crash leaves a
@@ -288,8 +305,21 @@ with a single line that is exactly one of these JSON objects:
             self._set_active(session_id, n, active_goal_mtime)
             self._set_status(f"attempt {n:03d}: running")
 
+            def on_session_started(started_session_id: str) -> None:
+                """Checkpoint provider-assigned ids as soon as they arrive."""
+
+                nonlocal session_id
+                session_id = started_session_id
+                self._set_active(session_id, n, active_goal_mtime)
+
             try:
-                result = self.adapter.run(prompt, session_id, resume)
+                result = self.adapter.run(
+                    prompt,
+                    session_id,
+                    resume,
+                    on_session_started=on_session_started,
+                )
+                session_id = result.session_id
             except QuotaExhausted as e:
                 self._set_status(
                     f"attempt {n:03d}: quota hit — sleeping "
@@ -297,10 +327,12 @@ with a single line that is exactly one of these JSON objects:
                 )
                 self._mark_complete(n, "quota_paused", None)
                 time.sleep(QUOTA_RETRY_SECS)
+                # A provider may hit quota before assigning a session id.  In
+                # that case the next turn starts fresh after the cool-down.
                 resume_session = session_id
                 continue
             except TransientError as e:
-                resume_session = e.session_id
+                resume_session = e.session_id or session_id
                 self.cp["transient_retries"] += 1
                 self._save_checkpoint()
                 if self.cp["transient_retries"] > TRANSIENT_MAX_RETRIES:
@@ -366,6 +398,11 @@ with a single line that is exactly one of these JSON objects:
             # failure mode that ends an otherwise-healthy run).
             wake_secs = result.requested_resume_secs
             if status == "in_progress" or (status is None and wake_secs):
+                if not session_id:
+                    self._end_error(
+                        n, f"{self.agent_name} returned in_progress without a session id"
+                    )
+                    return
                 if status == "in_progress":
                     hint = term.get("wait_secs")
                     if not (isinstance(hint, (int, float)) and hint > 0):

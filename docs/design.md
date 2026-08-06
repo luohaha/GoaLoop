@@ -4,17 +4,17 @@
 > engineering — a goal-driven multi-attempt iteration framework: a thin
 > Manager (the user's Claude Code session,
 > driven by skills) launches a small background orchestrator, the
-> orchestrator runs each attempt as a fresh `claude -p` Runner that executes
+> orchestrator runs each attempt as a fresh headless Runner that executes
 > the verification procedure spelled out in `goal.md` plus one unit of work
 > toward the goal, and the orchestrator terminates when verification passes
 > or the human stops it.
 
 ## Status
 
-Implemented (v0.1). The runtime is the `goaloop` Python package
-(`goaloop/`): a `claude -p` adapter, the attempt loop, and a
-`run`/`status`/`stop`/`continue` CLI. This document is the canonical
-reference for the architecture.
+Implemented. The runtime is the `goaloop` Python package (`goaloop/`): a
+provider-neutral worker-agent contract and registry, Claude and Codex CLI
+adapters, the attempt loop, and a `run`/`status`/`stop`/`continue` CLI. This
+document is the canonical reference for the architecture.
 
 > **Note on the runtime pivot.** An earlier draft of this design ran the
 > Runner as a Claude Code *subagent* (spawned via the `Agent` tool from the
@@ -56,13 +56,13 @@ Existing implementations of this pattern tend to fall into one trap:
   multi-phase state machine). These work well for the domain they were
   built for but resist generalization without invasive plugin layers.
 
-GoaLoop avoids that trap. Each Runner is a fresh `claude -p` process — and
-when `claude -p` is authenticated with a Claude Code subscription it is
-subscription-covered, so the orchestrator does not incur per-token API
-rates. The
-framework provides only the conventions needed for the iteration pattern
-itself — goal specification, manager–runner role split, verification
-protocol — and makes no domain assumptions.
+GoaLoop avoids that trap. Each Runner is a fresh headless agent process.
+The initial built-in providers are Claude Code (`claude -p`) and Codex
+(`codex exec`); the orchestrator sees only their normalized session, result,
+cost, pause, and recoverable-error contract. The framework provides only the
+conventions needed for the iteration pattern itself — goal specification,
+manager–runner role split, verification protocol — and makes no domain
+assumptions.
 
 ## Philosophy
 
@@ -83,16 +83,15 @@ orchestrator are distinct processes; the Runner is spawned per attempt).
   an LLM. It holds no authoritative state — only a tiny checkpoint (the
   active session id) so a crashed or quota-paused attempt can resume rather
   than restart.
-- **Runner** is a fresh `claude -p` process the orchestrator spawns per
-  attempt. It does one complete attempt: read context, run the Verification
-  procedure, do one unit of work if needed, update memory files, write a
-  per-attempt record, end its turn with a status terminator.
+- **Runner** is a fresh headless Claude or Codex process the orchestrator
+  spawns per attempt. It does one complete attempt: read context, run the
+  Verification procedure, do one unit of work if needed, update memory
+  files, write a per-attempt record, end its turn with a status terminator.
 
-Each Runner invocation is a fresh `claude -p` session — no memory of prior
+Each Runner invocation is a fresh provider session — no memory of prior
 runs, context only via workspace files. This is the genuine "fresh process
-per iteration" property, and on a Claude Code subscription it does not pay
-API rates. Because the orchestrator is detached, it keeps iterating even if
-the Manager session closes.
+per iteration" property. Because the orchestrator is detached, it keeps
+iterating even if the Manager session closes.
 
 ### 2. Verification rigor over runtime referee
 
@@ -114,7 +113,7 @@ the combination of two design choices already mandated elsewhere:
    the human's authored input. Runners read these criteria; they do not
    author them.
 
-2. **Each Runner is a fresh `claude -p` session, and Verification runs once
+2. **Each Runner is a fresh provider session, and Verification runs once
    at the start of each attempt.** The verdict produced in attempt N is
    therefore formed by Runner N reading the state that Runner N−1 left
    behind, with no shared context to Runner N−1's reasoning. The "judge" is
@@ -137,16 +136,15 @@ workspace — that refusal is itself useful product feedback to the human.
 
 ### 3. Honest about what the framework can enforce
 
-GoaLoop is a thin layer of conventions on top of `claude -p`. What it can
-and cannot do shifted slightly with the `claude -p` runtime:
+GoaLoop is a thin layer of conventions on top of headless agent CLIs:
 
 - It **can** stop the orchestrator programmatically (`goaloop stop` sends SIGTERM)
-  and **can** read each attempt's reported `total_cost_usd` from the
-  stream-json `result` event (logged per attempt). It still does **not**
-  *enforce* a token/cost budget — knowing the cost is not the same as
-  capping it mid-stream — so no `max_tokens` appears in `goal.md`.
-- It cannot sandbox the Runner from the user's workspace (`claude -p` runs
-  with `--dangerously-skip-permissions` in the workspace).
+  and **can** read cost when a provider reports it. Claude stream-json reports
+  USD cost; Codex JSONL currently reports token usage but not USD cost. It
+  still does **not** cap a turn mid-stream.
+- It does not sandbox the Runner from the environment: Claude uses
+  `--dangerously-skip-permissions`, and Codex uses
+  `--dangerously-bypass-approvals-and-sandbox`.
 - It cannot verify in real time that the Runner ran the procedure honestly;
   the next Runner's fresh-context verification catches dishonesty, but not
   instantly.
@@ -169,13 +167,13 @@ lives on disk. GoaLoop *is* a Ralph loop, with thin structure added:
 
 | Ralph (`claude -p`) | GoaLoop |
 |---|---|
-| `while :; do claude -p < PROMPT.md` | `goaloop run` orchestrator, one `claude -p` per attempt |
-| `PROMPT.md` (fixed instruction) | `agents/goal-runner.md` as `--append-system-prompt` + a per-attempt brief |
-| Subprocess per iteration | Fresh `claude -p` session per attempt |
+| `while :; do claude -p < PROMPT.md` | `goaloop run` orchestrator, one configured worker per attempt |
+| `PROMPT.md` (fixed instruction) | `agents/goal-runner.md` + a per-attempt brief |
+| Subprocess per iteration | Fresh provider session per attempt |
 | `PLAN.md` + scattered state files | `goal.md` + `memory/learnings.md` + `attempts/NNN.md` |
 | `grep DONE PLAN.md` to terminate | orchestrator reads the Runner's `{"status":"pass"}` terminator and exits |
 | No evaluator (or `grep` as evaluator) | Runner executes `goal.md`'s Verification procedure |
-| API billing | Subscription (subscription-authenticated `claude -p`) |
+| One hard-coded CLI | Provider registry (`claude -p` / `codex exec`) |
 
 ## Architecture
 
@@ -203,23 +201,22 @@ are the source of truth.
 
 **Orchestrator**
 The `goaloop` background process (`goaloop run <workspace>`). Deterministic,
-not an LLM. For each attempt it mints a session id, spawns one `claude -p`
-Runner, parses the Runner's terminator, and branches: exit (on `pass` or
-`blocked`), pace and start the next attempt with a fresh session (on
-`advanced`), or wait then resume the same session (on `in_progress`). It
-persists only a small checkpoint (`.goaloop/state.json` — the active session
-id) so a crashed or quota-paused attempt resumes the same session instead of
-restarting. On transient network errors it resumes the same session (bounded
-retries); on an API quota hit it sleeps for a cool-down and resumes
-indefinitely; on an unrecoverable give-up it exits with `error`.
+not an LLM. For each attempt it asks the selected adapter for a session
+(Claude can preallocate one; Codex reports one in `thread.started`), spawns
+the Runner, parses the normalized result terminator, and branches: exit (on
+`pass` or `blocked`), pace and start the next attempt with a fresh session
+(on `advanced`), or wait then resume the same session (on `in_progress`). It
+persists the active provider and session id in `.goaloop/state.json` so a
+crashed or quota-paused attempt resumes only through the same provider.
 
 **Runner**
-A fresh `claude -p` process spawned per attempt, with `agents/goal-runner.md`
-as its appended system prompt. Reads the workspace, runs Verification,
-optionally does one unit of advance, updates `learnings.md`, writes
-`attempts/NNN.md`, and ends its turn with a `{"status":
-pass|advanced|in_progress|blocked}` terminator. Fresh context every NEW
-attempt — no memory of prior runs except via workspace files.
+A fresh configured headless process spawned per attempt. Claude receives
+`agents/goal-runner.md` via `--append-system-prompt`; Codex receives the same
+protocol prepended to the initial prompt. The Runner reads the workspace,
+runs Verification, optionally advances one unit, updates `learnings.md`,
+writes `attempts/NNN.md`, and ends with a
+`{"status": pass|advanced|in_progress|blocked}` terminator. Fresh context
+every NEW attempt — no memory of prior runs except via workspace files.
 
 **Verification**
 The procedure defined in `goal.md`'s Verification section. The Runner
@@ -235,7 +232,7 @@ tokens.
 ```
 <workspace>/
 ├── goal.md            # Objective + Hard Constraints + Verification spec
-├── config.yaml        # Optional: model / interval / mode / caps (see below)
+├── config.yaml        # Optional: agent / model / interval / mode / caps
 ├── suggestions/       # Optional: per-attempt human notes (see below)
 │   └── 006.md         # suggestions/NNN.md is read by the Runner of attempt NNN
 ├── memory/
@@ -343,10 +340,10 @@ full model:
 
 **`blocked` vs. `error`** is the key distinction. `blocked` is the *Runner's*
 judgment (an LLM deciding the goal is unreachable without human help).
-`error` is the *orchestrator's* deterministic detection (regex on claude's
-result text for transient/quota, `try/except` for crashes, terminator-parse
-failure for malformed output) after bounded retries. The first means "the
-task needs you"; the second means "the infrastructure gave up".
+`error` is the *orchestrator's* deterministic detection (provider-normalized
+transient/quota errors, `try/except` for crashes, terminator-parse failure for
+malformed output) after bounded retries. The first means "the task needs you";
+the second means "the infrastructure gave up".
 
 The convention for signaling `pass` / `fail` from a shell-based verification
 is, e.g., exit code `0` / non-zero, or a JSON status field — the choice is
@@ -365,9 +362,9 @@ the verification script does not need to be re-entrant.
 
 #### Session semantics
 
-A fresh `claude -p` session is minted for every NEW attempt — this is the
+A fresh provider session is created for every NEW attempt — this is the
 anti-cheat property (Runner N has no memory of Runner N−1). Same-session
-`--resume` happens only in two cases:
+resume happens only in two cases:
 
 - **`in_progress` pause** — a clean resume after a timed wait, prompted with
   `Continue.`
@@ -432,13 +429,14 @@ The orchestrator, not the Manager, performs the per-attempt mechanics:
    disk each turn, so a crash that didn't write `attempts/NNN.md` retries
    the same number.
 2. **Pick a session.** Resume the checkpointed session if the prior process
-   died mid-attempt; otherwise mint a fresh uuid (the normal case — a fresh
-   Runner with no memory of the last).
-3. **Spawn the Runner.** `claude -p <brief> --append-system-prompt
-   goal-runner.md --output-format stream-json --session-id <uuid>
-   --dangerously-skip-permissions`. The brief carries the workspace path,
-   the attempt number, and the read-context + terminator instructions; the
-   Runner itself reads `suggestions/NNN.md` for that attempt as context.
+   died mid-attempt; otherwise start a fresh provider session (the normal
+   case — a Runner with no memory of the last). Claude accepts a preallocated
+   UUID; Codex's id is checkpointed immediately from `thread.started`.
+3. **Spawn the Runner.** The adapter translates the shared prompt and session
+   contract into either `claude -p --output-format stream-json` or
+   `codex exec --json` (and their provider-specific resume forms). The brief
+   carries the workspace path, attempt number, and terminator instructions;
+   the Runner reads `suggestions/NNN.md` for that attempt as context.
 4. **Parse the terminator** (`{"status": pass|advanced|in_progress|blocked}`)
    and branch: `pass`/`blocked` → exit; `advanced` (and `attempts/NNN.md`
    exists) → pace (or, in copilot mode, wait for approval), then next
@@ -558,10 +556,10 @@ sections so future Runners can scan quickly:
 ### How to run
 
 The user runs `goaloop run <name>` (directly or via `/goal-flash`), which
-launches the detached orchestrator. It runs each attempt as a fresh
-`claude -p` Runner and exits on `pass`. Because it is its own process, it
-keeps iterating regardless of whether the Claude Code session that launched
-it stays open.
+launches the detached orchestrator. It runs each attempt as a fresh worker
+from the configured provider and exits on `pass`. Because it is its own
+process, it keeps iterating regardless of whether the Claude Code session
+that launched it stays open.
 
 There are two modes, selected by `--mode` or `config.yaml`:
 
@@ -580,11 +578,12 @@ Optional, per-workspace, at `<workspace>/config.yaml`. Flat keys:
 
 | Key | Meaning | Default |
 |---|---|---|
-| `model` | model id passed to `claude -p` | (CLI default) |
+| `agent` | worker provider: `claude` or `codex` | `claude` |
+| `model` | model id passed to the selected provider CLI | (CLI default) |
 | `interval` | seconds between successful attempts (auto mode) | `30` |
 | `mode` | `auto` or `copilot` | `auto` |
 
-Precedence: CLI flags (`--model` / `--interval` / `--mode`) override
+Precedence: CLI flags (`--agent` / `--model` / `--interval` / `--mode`) override
 `config.yaml`, which overrides the built-in defaults.
 
 The orchestrator terminates when:
@@ -618,7 +617,7 @@ Human pacing during a run is achieved by:
 
 GoaLoop uses exactly one loop: the `goaloop run` orchestrator's attempt loop.
 The Manager skill body MUST NOT invoke `/loop` or `ScheduleWakeup`, and the
-Runner (a `claude -p` session) MUST NOT either — if a Runner emitted
+Runner (a headless provider session) MUST NOT either — if a Runner emitted
 `ScheduleWakeup` it would have no effect on the orchestrator, which paces
 attempts itself. Long-running verification is handled within one attempt
 (the Runner waits, or returns `in_progress` for the orchestrator to time the
@@ -662,9 +661,9 @@ with the reason so future contributors don't reintroduce them by reflex.
 
 | Feature | Why excluded |
 |---|---|
-| Independent referee evaluator (separate from Runner) | Inter-attempt judging — Runner N (fresh `claude -p` session) judging the state Runner N−1 left behind — provides the same arm's-length-referee property at zero infrastructure cost; see Philosophy §2 |
+| Independent referee evaluator (separate from Runner) | Inter-attempt judging — Runner N (a fresh provider session) judging the state Runner N−1 left behind — provides the same arm's-length-referee property at zero infrastructure cost; see Philosophy §2 |
 | Multiple agent roles beyond Manager–Runner (planner / critic / judge) | Manager + Runner already covers orchestration vs. execution; further role splits add coordination overhead and rarely pay off |
-| Subagent Runner (via the `Agent` tool) | The earlier design's runtime, dropped in v0.1: it required the Manager session to stay open and self-schedule, and tied each attempt to the Manager's context lifetime. A detached `claude -p` orchestrator is closer to the Ralph-loop ideal and survives the session closing — for the same subscription cost. See the runtime-pivot note under Status. |
+| Subagent Runner (via the `Agent` tool) | The earlier design's runtime, dropped in v0.1: it required the Manager session to stay open and self-schedule, and tied each attempt to the Manager's context lifetime. A detached headless-agent orchestrator is closer to the Ralph-loop ideal and survives the session closing. See the runtime-pivot note under Status. |
 | `verdict.log` append-only history | `attempts/NNN.md` already records each verification result; one less moving piece |
 | Hooks (Stop / SessionStart / PreToolUse / PostToolUse) | The orchestrator + skills are sufficient; hooks would have been infrastructure for an independent evaluator we are not building |
 | Pareto multi-objective | "Main objective + hard constraints" covers the realistic cases without ambiguity |
@@ -722,8 +721,8 @@ judge rates it ≥ 8/10 on a clarity rubric":
 
 Test: does the framework accommodate LLM-as-judge verification without
 needing any framework support for "judge evaluators"? The answer is yes
-— the Runner does the judging itself, in its own `claude -p` context. The
-arm's-length property comes from Runner N (a fresh `claude -p` session)
+— the Runner does the judging itself, in its own fresh context. The
+arm's-length property comes from Runner N (a fresh provider session)
 judging the draft that Runner N−1 produced; no nested agent or separate
 evaluator subsystem is required. This is the same mechanism that gives
 Scenario A its anti-cheat property, applied to a qualitative criterion.

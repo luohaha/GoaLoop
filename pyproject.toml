@@ -1,12 +1,12 @@
 [project]
 name = "goaloop"
 version = "0.1.1"
-description = "Goal-driven multi-attempt iteration loop driven by `claude -p`"
+description = "Goal-driven multi-attempt iteration loop for headless coding agents"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "luohaha" }]
-keywords = ["claude", "claude-code", "agent", "automation", "iteration", "goal-driven"]
+keywords = ["claude", "codex", "agent", "automation", "iteration", "goal-driven"]
 dependencies = ["python-dotenv>=1.0"]
 classifiers = [
     "Development Status :: 4 - Beta",

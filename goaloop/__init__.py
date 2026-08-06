@@ -1,9 +1,8 @@
-"""GoaLoop — a goal-driven multi-attempt iteration loop driven by `claude -p`.
+"""GoaLoop — a goal-driven multi-attempt iteration loop.
 
-The package is a lean orchestrator: it loops a fresh `claude -p` session
-(the Runner) over a workspace's `goal.md` until the Runner's Verification
-passes or the human stops it. All durable state lives in the workspace on
-disk; the loop holds nothing authoritative.
+The package is a lean orchestrator: it loops fresh headless Claude or Codex
+workers over a workspace's ``goal.md`` until Verification passes or the human
+stops it. All durable state lives in the workspace on disk.
 """
 
 __version__ = "0.1.0"
