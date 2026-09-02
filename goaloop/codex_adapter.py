@@ -16,6 +16,7 @@ from typing import Callable, TextIO
 
 from .agent import (
     AgentResult,
+    ProviderError,
     QUOTA_RE,
     QuotaExhausted,
     SessionStarted,
@@ -154,13 +155,15 @@ class CodexAdapter:
             raise QuotaExhausted(primary.strip()[:300])
         if primary and TRANSIENT_RE.search(primary):
             raise TransientError(primary.strip()[:300], active_session_id)
+        if error_text:
+            raise ProviderError(f"codex exec failed: {error_text.strip()[:300]}")
 
         if not active_session_id:
             raise RuntimeError("codex exec produced no thread.started event")
-        if proc.returncode and not result_text:
+        if proc.returncode:
             detail = primary.strip()[:200]
             raise RuntimeError(
-                f"codex exec exited {proc.returncode} with no result"
+                f"codex exec exited {proc.returncode}"
                 + (f": {detail}" if detail else "")
             )
         if not result_text:

@@ -10,7 +10,7 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
-from goaloop.agent import AgentResult
+from goaloop.agent import AgentResult, ProviderError
 from goaloop.cli import main
 from goaloop.orchestrator import Orchestrator
 
@@ -43,6 +43,30 @@ class PassingCodexLikeAgent:
             text='{"status": "pass", "verification": "ok"}',
             session_id=CODEX_THREAD,
         )
+
+
+class RejectedCodexLikeAgent:
+    provider = "codex"
+    reports_cost = False
+
+    def __init__(self):
+        self.calls = 0
+
+    def allocate_session_id(self):
+        return None
+
+    def run(
+        self,
+        prompt,
+        session_id=None,
+        resume=False,
+        stderr=None,
+        on_session_started=None,
+    ):
+        self.calls += 1
+        if on_session_started:
+            on_session_started(CODEX_THREAD)
+        raise ProviderError("codex exec failed: cyber_policy")
 
 
 class OrchestratorProviderTest(unittest.TestCase):
@@ -90,6 +114,24 @@ class OrchestratorProviderTest(unittest.TestCase):
 
             self.assertEqual(fake.calls, [(None, False)])
             self.assertTrue(any("worker agent changed" in line for line in logs))
+
+    def test_provider_failure_ends_immediately_with_original_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = self._workspace(tmp)
+            fake = RejectedCodexLikeAgent()
+            with patch("goaloop.orchestrator.create_agent", return_value=fake):
+                Orchestrator(ws, agent="codex", log=lambda _: None).run()
+
+            self.assertEqual(fake.calls, 1)
+            status = (ws / ".goaloop" / "status.txt").read_text()
+            self.assertIn("codex exec failed: cyber_policy", status)
+            self.assertNotIn("malformed", status)
+            state = json.loads((ws / ".goaloop" / "state.json").read_text())
+            self.assertIsNone(state["active_session_id"])
+            complete = json.loads(
+                (ws / ".goaloop" / "attempt_complete.json").read_text()
+            )
+            self.assertEqual(complete["status"], "error")
 
     def test_unenforceable_cost_cap_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:

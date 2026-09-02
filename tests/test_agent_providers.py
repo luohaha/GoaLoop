@@ -12,6 +12,7 @@ from unittest.mock import patch
 from goaloop.adapter import ClaudeAdapter, ClaudeResult
 from goaloop.agent import (
     AgentResult,
+    ProviderError,
     QuotaExhausted,
     TransientError,
     available_agents,
@@ -178,6 +179,39 @@ class CodexAdapterTest(unittest.TestCase):
         with self.assertRaises(TransientError) as ctx:
             self._run_with(FakeProcess(events, returncode=1), "brief")
         self.assertEqual(ctx.exception.session_id, THREAD_ID)
+
+    def test_provider_failure_is_not_masked_by_intermediate_message(self):
+        events = [
+            {"type": "thread.started", "thread_id": THREAD_ID},
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "agent_message",
+                    "text": "I am still investigating the failure.",
+                },
+            },
+            {
+                "type": "turn.failed",
+                "error": {
+                    "message": "content was flagged for cybersecurity risk",
+                    "codex_error_info": "cyber_policy",
+                },
+            },
+        ]
+        with self.assertRaises(ProviderError) as ctx:
+            self._run_with(FakeProcess(events), "brief")
+        self.assertIn("cyber_policy", str(ctx.exception))
+
+    def test_nonzero_exit_is_not_masked_by_intermediate_message(self):
+        events = [
+            {"type": "thread.started", "thread_id": THREAD_ID},
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "Working on it."},
+            },
+        ]
+        with self.assertRaisesRegex(RuntimeError, "codex exec exited 1"):
+            self._run_with(FakeProcess(events, returncode=1), "brief")
 
     def test_missing_thread_started_is_hard_failure(self):
         events = [
