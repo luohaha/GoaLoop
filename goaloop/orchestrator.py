@@ -2,7 +2,8 @@
 
 Runs the attempt loop: spawns a fresh headless worker agent over a workspace
 each attempt until the Runner's Verification passes, the Runner reports it's
-blocked, the human stops it, or unrecoverable errors are exhausted.
+blocked, the human stops it, a provider reports a terminal failure, or the
+retry budget is exhausted.
 """
 
 from __future__ import annotations
@@ -13,11 +14,11 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from .agent import QuotaExhausted, TransientError, create_agent
+from .agent import ProviderError, QuotaExhausted, TransientError, create_agent
 
-# Consecutive non-recoverable failures (malformed terminator, missing
-# attempt record, generic crash) before the loop gives up. Quota/transient
-# pauses are external and do NOT count toward this.
+# Consecutive malformed outputs or generic crashes before the loop gives up.
+# Explicit terminal provider failures stop immediately; quota/transient pauses
+# are external and do NOT count toward this.
 MAX_CONSECUTIVE_FAILURES = 3
 
 # Cool-down after an API quota hit. Anthropic limits reset on ~hourly
@@ -346,6 +347,9 @@ with a single line that is exactly one of these JSON objects:
                 )
                 time.sleep(TRANSIENT_RETRY_SECS)
                 continue
+            except ProviderError as e:
+                self._end_error(n, str(e))
+                return
             except Exception as e:  # noqa: BLE001 — record and bound retries
                 self.cp["consecutive_failures"] += 1
                 self._save_checkpoint()

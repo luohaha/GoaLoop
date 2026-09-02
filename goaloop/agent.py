@@ -39,6 +39,10 @@ class TransientError(Exception):
         super().__init__(message)
 
 
+class ProviderError(Exception):
+    """A terminal provider failure that is neither quota nor transient."""
+
+
 @dataclass
 class AgentResult:
     """Provider-neutral result from one headless agent turn."""
